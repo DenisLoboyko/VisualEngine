@@ -1,0 +1,7 @@
+﻿external/
+x64/
+.vs/
+*.obj
+*.pdb
+*.ilk
+*.log

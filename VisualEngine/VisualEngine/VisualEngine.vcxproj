@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{1bc89f62-bc94-4c89-a4f0-de1216110860}</ProjectGuid>
+    <RootNamespace>VisualEngine</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\include;C:\Users\loboy\Downloads\VisualEngine\external\GLAD\include;C:\Users\loboy\Downloads\VisualEngine\external\GLM;C:\Users\loboy\Downloads\VisualEngine\external\ImGui;C:\Users\loboy\Downloads\VisualEngine\external\stb;C:\Users\loboy\Downloads\VisualEngine\external\Lua\include;C:\Users\loboy\Downloads\VisualEngine\src;C:\Users\loboy\Downloads\VisualEngine\external\vcpkg\installed\x64-windows\include;C:\Program Files\Assimp\include;%(AdditionalIncludeDirectories) C:\Users\loboy\Downloads\VisualEngine\external\bullet\include</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\lib-vc2022;C:\Users\loboy\Downloads\VisualEngine\external\Lua;C:\Users\loboy\Downloads\VisualEngine\external\vcpkg\installed\x64-windows\lib;C:\Program Files\Assimp\lib\x64;C:\Users\loboy\Downloads\VisualEngine\external\bullet\build_md\lib\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;opengl32.lib;user32.lib;gdi32.lib;shell32.lib;liblua55.a;BulletDynamics.lib;BulletCollision.lib;BulletSoftBody.lib;LinearMath.lib;assimp-vc145-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\include;C:\Users\loboy\Downloads\VisualEngine\external\GLAD\include;C:\Users\loboy\Downloads\VisualEngine\external\GLM;C:\Users\loboy\Downloads\VisualEngine\external\ImGui;C:\Users\loboy\Downloads\VisualEngine\external\stb;C:\Users\loboy\Downloads\VisualEngine\external\Lua\include;C:\Users\loboy\Downloads\VisualEngine\src;C:\Users\loboy\Downloads\VisualEngine\external\vcpkg\installed\x64-windows\include;C:\Program Files\Assimp\include;%(AdditionalIncludeDirectories) C:\Users\loboy\Downloads\VisualEngine\external\bullet\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\lib-vc2022;C:\Users\loboy\Downloads\VisualEngine\external\Lua;C:\Users\loboy\Downloads\VisualEngine\external\vcpkg\installed\x64-windows\lib;C:\Program Files\Assimp\lib\x64;C:\Users\loboy\Downloads\VisualEngine\external\bullet\build_md\lib\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;opengl32.lib;user32.lib;gdi32.lib;shell32.lib;liblua55.a;BulletDynamics.lib;BulletCollision.lib;BulletSoftBody.lib;LinearMath.lib;assimp-vc145-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\include;C:\Users\loboy\Downloads\VisualEngine\external\GLAD\include;C:\Users\loboy\Downloads\VisualEngine\external\GLM;C:\Users\loboy\Downloads\VisualEngine\external\ImGui;C:\Users\loboy\Downloads\VisualEngine\external\stb;C:\Users\loboy\Downloads\VisualEngine\external\Lua\include;C:\Users\loboy\Downloads\VisualEngine\src;C:\Program Files\Assimp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\lib-vc2022;C:\Users\loboy\Downloads\VisualEngine\external\Lua;C:\Program Files\Assimp\lib\x64;C:\Users\loboy\Downloads\VisualEngine\external\bullet\build_md\lib\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;opengl32.lib;user32.lib;gdi32.lib;shell32.lib;liblua55.a;assimp-vc145-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\include;C:\Users\loboy\Downloads\VisualEngine\external\GLAD\include;C:\Users\loboy\Downloads\VisualEngine\external\GLM;C:\Users\loboy\Downloads\VisualEngine\external\ImGui;C:\Users\loboy\Downloads\VisualEngine\external\stb;C:\Users\loboy\Downloads\VisualEngine\external\Lua\include;C:\Users\loboy\Downloads\VisualEngine\src;C:\Program Files\Assimp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\Users\loboy\Downloads\VisualEngine\external\GLFW\lib-vc2022;C:\Users\loboy\Downloads\VisualEngine\external\Lua;C:\Program Files\Assimp\lib\x64;C:\Users\loboy\Downloads\VisualEngine\external\bullet\build_md\lib\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>glfw3.lib;opengl32.lib;user32.lib;gdi32.lib;shell32.lib;liblua55.a;assimp-vc145-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\GLAD\src\glad.c" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\ImGui\imgui.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\ImGui\imgui_draw.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\ImGui\imgui_tables.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\ImGui\imgui_widgets.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\ImGui\imgui_impl_glfw.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\external\ImGui\imgui_impl_opengl3.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\src\main.cpp" />
+    <ClCompile Include="C:\Users\loboy\Downloads\VisualEngine\src\Platform\Windows\WindowsWindow.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\src\Core\AudioEngine.h" />
+    <ClInclude Include="..\..\src\Core\BuildSystem.h" />
+    <ClInclude Include="..\..\src\Core\miniaudio.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Window.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Shader.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Camera.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Grid.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Primitives.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Skybox.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\Model.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\ProjectPanel.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\LuaEngine.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Core\ScriptEditor.h" />
+    <ClInclude Include="C:\Users\loboy\Downloads\VisualEngine\src\Platform\Windows\WindowsWindow.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="DEPENDENCIES.md" />
+    <None Include="external\LUA_SETUP.md" />
+    <None Include="OPTIMIZATION_GUIDE.md" />
+    <None Include="README.md" />
+    <None Include="SETUP_GUIDE.md" />
+    <None Include="setup_lua.bat" />
+    <None Include="setup_lua.ps1" />
+    <None Include="TROUBLESHOOTING.md" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>
