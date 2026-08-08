@@ -193,131 +193,149 @@ namespace VE {
 
             // Save.SetInt(key, val)
             lua_pushstring(L, "SetInt");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 int v = (int)luaL_checknumber(LS, 2);
                 SaveSystem::Get().SetInt(k, v);
                 return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.SetFloat(key, val)
             lua_pushstring(L, "SetFloat");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 float v = (float)luaL_checknumber(LS, 2);
                 SaveSystem::Get().SetFloat(k, v);
                 return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.SetString(key, val)
             lua_pushstring(L, "SetString");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 const char* v = luaL_checkstring(LS, 2);
                 SaveSystem::Get().SetString(k, v);
                 return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.SetBool(key, val)
             lua_pushstring(L, "SetBool");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 bool v = lua_toboolean(LS, 2) != 0;
                 SaveSystem::Get().SetBool(k, v);
                 return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.GetInt(key, default?)
             lua_pushstring(L, "GetInt");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 int def = lua_isnumber(LS,2)?(int)lua_tonumber(LS,2):0;
                 lua_pushnumber(LS, SaveSystem::Get().GetInt(k, def));
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.GetFloat(key, default?)
             lua_pushstring(L, "GetFloat");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 float def = lua_isnumber(LS,2)?(float)lua_tonumber(LS,2):0.f;
                 lua_pushnumber(LS, SaveSystem::Get().GetFloat(k, def));
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.GetString(key, default?)
             lua_pushstring(L, "GetString");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 const char* def = lua_isstring(LS,2)?lua_tostring(LS,2):"";
                 lua_pushstring(LS, SaveSystem::Get().GetString(k, def).c_str());
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.GetBool(key, default?)
             lua_pushstring(L, "GetBool");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 bool def = lua_isboolean(LS,2)?lua_toboolean(LS,2)!=0:false;
                 lua_pushboolean(LS, SaveSystem::Get().GetBool(k, def)?1:0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.HasKey(key)
             lua_pushstring(L, "HasKey");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* k = luaL_checkstring(LS, 1);
                 lua_pushboolean(LS, SaveSystem::Get().HasKey(k)?1:0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.Save(slot?)
             lua_pushstring(L, "Save");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 int slot = lua_isnumber(LS,1)?(int)lua_tonumber(LS,1):0;
                 lua_pushboolean(LS, SaveSystem::Get().Save(slot)?1:0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.Load(slot?)
             lua_pushstring(L, "Load");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 int slot = lua_isnumber(LS,1)?(int)lua_tonumber(LS,1):0;
                 lua_pushboolean(LS, SaveSystem::Get().Load(slot)?1:0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.Delete(slot?)
             lua_pushstring(L, "Delete");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 int slot = lua_isnumber(LS,1)?(int)lua_tonumber(LS,1):0;
                 lua_pushboolean(LS, SaveSystem::Get().Delete(slot)?1:0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Save.Exists(slot?)
             lua_pushstring(L, "Exists");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 int slot = lua_isnumber(LS,1)?(int)lua_tonumber(LS,1):0;
                 lua_pushboolean(LS, SaveSystem::Get().Exists(slot)?1:0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             lua_setglobal(L, "Save");
             std::cout << "[SaveSystem] Lua API registered (Save.*)\n";
+
+            // ── Удобные алиасы верхнего уровня — SaveGame()/LoadGame() ──
+            // Просто вызывают Save.Save()/Save.Load() (слот 0 по умолчанию).
+            // SaveGame(slot?) -> bool
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
+                int slot = lua_isnumber(LS,1)?(int)lua_tonumber(LS,1):0;
+                lua_pushboolean(LS, SaveSystem::Get().Save(slot)?1:0);
+                return 1;
+            }, 0);
+            lua_setglobal(L, "SaveGame");
+
+            // LoadGame(slot?) -> bool
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
+                int slot = lua_isnumber(LS,1)?(int)lua_tonumber(LS,1):0;
+                lua_pushboolean(LS, SaveSystem::Get().Load(slot)?1:0);
+                return 1;
+            }, 0);
+            lua_setglobal(L, "LoadGame");
         }
 
     private:

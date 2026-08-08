@@ -148,47 +148,6 @@ namespace VE {
             return result;
         }
 
-        // ----- RaycastAll — все пересечения вдоль луча, отсортированы по дистанции -----
-        // (для дробовиков/выстрелов сквозь несколько объектов, определения всех
-        //  объектов над персонажем и т.п. — обычный Raycast возвращает только ближайший)
-        std::vector<RaycastHit> RaycastAll(const glm::vec3& origin, const glm::vec3& dir, float maxDistance = 1000.f)
-        {
-            std::vector<RaycastHit> results;
-            float len = glm::length(dir);
-            if (len < 1e-6f || !m_DynamicsWorld) return results;
-            glm::vec3 nd = dir / len;
-
-            btVector3 from(origin.x, origin.y, origin.z);
-            btVector3 to(origin.x + nd.x*maxDistance, origin.y + nd.y*maxDistance, origin.z + nd.z*maxDistance);
-            btCollisionWorld::AllHitsRayResultCallback cb(from, to);
-            m_DynamicsWorld->rayTest(from, to, cb);
-
-            int n = cb.m_collisionObjects.size();
-            results.reserve(n);
-            for (int i = 0; i < n; i++)
-            {
-                RaycastHit hit;
-                hit.hit = true;
-                hit.entity = (EntityID)cb.m_collisionObjects[i]->getUserIndex();
-                hit.point = { cb.m_hitPointWorld[i].x(), cb.m_hitPointWorld[i].y(), cb.m_hitPointWorld[i].z() };
-                hit.normal = { cb.m_hitNormalWorld[i].x(), cb.m_hitNormalWorld[i].y(), cb.m_hitNormalWorld[i].z() };
-                hit.distance = glm::length(hit.point - origin);
-                results.push_back(hit);
-            }
-            // Ближайшие — первыми
-            std::sort(results.begin(), results.end(),
-                [](const RaycastHit& a, const RaycastHit& b){ return a.distance < b.distance; });
-            return results;
-        }
-
-        // ----- CheckCollision — соприкасаются ли два Entity ПРЯМО СЕЙЧАС -----
-        // Основано на активных парах контактов последнего Step() (та же информация,
-        // на которой строятся onCollisionEnter/Exit события).
-        bool CheckCollision(EntityID a, EntityID b) const
-        {
-            return m_ActivePairsLastFrame.find(PairKey(a, b)) != m_ActivePairsLastFrame.end();
-        }
-
     private:
         Physics()
         {

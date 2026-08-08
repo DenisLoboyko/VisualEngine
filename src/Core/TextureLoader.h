@@ -26,10 +26,13 @@
 #include <windows.h>
 #endif
 
-// stb_image — уже подключено через Skybox.h (с STB_IMAGE_IMPLEMENTATION),
-// поэтому здесь НЕ дублируем инклуд — иначе реализация раскроется дважды
-// и линковщик/компилятор выдаст десятки ошибок "уже имеет текст реализации".
-// #include <stb_image.h>
+// stb_image: подключаем ТОЛЬКО объявления функций (без STB_IMAGE_IMPLEMENTATION).
+// Это безопасно делать в нескольких файлах — сам stb_image.h защищён от повторных
+// объявлений своим include-guard'ом (STBI_INCLUDE_STB_IMAGE_H). Реализация (тела
+// функций) генерируется только там, где ПЕРЕД инклудом стоит #define STB_IMAGE_IMPLEMENTATION
+// — сейчас это делает Skybox.h, и здесь МЫ ЭТОТ МАКРОС НЕ ОПРЕДЕЛЯЕМ, так что
+// дублирования реализации не будет, даже если TextureLoader.h подключится раньше Skybox.h.
+#include "../../external/stb/stb_image.h"
 
 namespace VE {
 

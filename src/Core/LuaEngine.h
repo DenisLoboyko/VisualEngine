@@ -14,6 +14,14 @@ extern "C" {
 
 namespace VE {
 
+    // Forward-declaration — сама реализация подключается через LuaBindings.h
+    // ПОСЛЕ класса LuaEngine (см. #include внизу файла). Без этой строки
+    // вызов VE::LuaBindings::register_all_bindings(L) внутри registerFunctions()
+    // не компилируется: тело inline-метода класса разворачивается компилятором
+    // "как будто сразу после закрывающей } класса" — то есть ДО того места,
+    // где обычный #include внизу файла успел бы объявить namespace LuaBindings.
+    namespace LuaBindings { void register_all_bindings(lua_State* L); }
+
     class LuaEngine
     {
     public:
@@ -27,6 +35,9 @@ namespace VE {
         float objScaleX=1,objScaleY=1,objScaleZ=1;
         // Object color
         float objR=1,objG=1,objB=1;
+        // Имя своего объекта — read-only для скрипта (this.name), нужно для
+        // Scene.Destroy(this.name) / поиска себя же через Scene.GetPosition и т.п.
+        std::string objName;
         // Отдельный "взгляд вверх/вниз" для FPS-камеры — НЕ вращает саму модель,
         // используется только для follow-камеры (см. lookPitch у SceneObject)
         float objLookPitch=0;
@@ -117,6 +128,8 @@ namespace VE {
             setField("g",      objG);
             setField("b",      objB);
             setField("lookPitch", objLookPitch);
+            lua_pushstring(L, objName.c_str());
+            lua_setfield(L, -2, "name");
             lua_setglobal(L,"this");
         }
 
@@ -291,6 +304,12 @@ namespace VE {
                 std::cout<<out<<"\n";
                 return 0;
             });
+
+            // Регистрируем все расширенные биндинги
+            VE::LuaBindings::register_all_bindings(L);
         }
     };
 }
+
+// Включаем LuaBindings ПОСЛЕ определения пространства VE и класса LuaEngine
+#include "LuaBindings.h"  // из папки src/Core/

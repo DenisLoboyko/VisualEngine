@@ -61,6 +61,7 @@ namespace VE {
     struct SoundSlot {
         ma_sound    sound;
         bool        inUse = false;
+        int         id    = 0;   // уникальный ID этого проигрывания, для StopSound(id)
     };
 
     // =========================================================
@@ -110,9 +111,10 @@ namespace VE {
 
         // path   — путь к файлу (.wav / .mp3 / .ogg)
         // volume — громкость 0.0 .. 1.0 (по умолчанию 1.0)
-        void PlaySound(const std::string& path, float volume = 1.0f)
+        // Возвращает ID проигрывания (> 0) для последующего StopSound(id), либо 0 при ошибке.
+        int PlaySound(const std::string& path, float volume = 1.0f)
         {
-            if (!m_Initialized) return;
+            if (!m_Initialized) return 0;
 
             SoundSlot* slot = GetFreeSlot();
             if (!slot) {
@@ -125,7 +127,7 @@ namespace VE {
                         break;
                     }
                 }
-                if (!slot) return; // реально переполнен
+                if (!slot) return 0; // реально переполнен
             }
 
             ma_result result = ma_sound_init_from_file(
@@ -136,14 +138,31 @@ namespace VE {
 
             if (result != MA_SUCCESS) {
                 std::cerr << "[Audio] Не удалось загрузить: " << path << "\n";
-                return;
+                return 0;
             }
 
             float v = std::clamp(volume, 0.0f, 1.0f);
             ma_sound_set_volume(&slot->sound, v);
             slot->inUse = true;
+            slot->id    = ++m_NextSoundID;
 
             ma_sound_start(&slot->sound);
+            return slot->id;
+        }
+
+        // Остановить конкретное проигрывание по ID, возвращённому PlaySound()
+        void StopSound(int id)
+        {
+            if (id <= 0) return;
+            for (auto& s : m_Pool) {
+                if (s.inUse && s.id == id) {
+                    ma_sound_stop(&s.sound);
+                    ma_sound_uninit(&s.sound);
+                    s.inUse = false;
+                    s.id    = 0;
+                    return;
+                }
+            }
         }
 
         void StopAllSounds()
@@ -153,6 +172,30 @@ namespace VE {
                     ma_sound_stop(&s.sound);
                     ma_sound_uninit(&s.sound);
                     s.inUse = false;
+                    s.id    = 0;
+                }
+            }
+        }
+
+        // Позиция "ушей" слушателя в мире — обычно ставится в позицию игрока/камеры
+        // каждый кадр из Lua: Audio.SetListenerPosition(x, y, z).
+        // Работает вместе с 3D-позиционированием отдельных звуков (SetSoundPosition).
+        void SetListenerPosition(float x, float y, float z)
+        {
+            if (!m_Initialized) return;
+            ma_engine_listener_set_position(&m_Engine, 0, x, y, z);
+        }
+
+        // Опционально: разместить конкретный звук в мире (громкость затухает с расстоянием
+        // до слушателя). Если не вызывать — звук проигрывается "не позиционно" (как сейчас).
+        void SetSoundPosition(int id, float x, float y, float z)
+        {
+            if (id <= 0) return;
+            for (auto& s : m_Pool) {
+                if (s.inUse && s.id == id) {
+                    ma_sound_set_position(&s.sound, x, y, z);
+                    ma_sound_set_spatialization_enabled(&s.sound, MA_TRUE);
+                    return;
                 }
             }
         }
@@ -248,74 +291,107 @@ namespace VE {
         {
             lua_newtable(L);
 
-            // Audio.PlaySound(path, volume?)
+            // Audio.PlaySound(path, volume?) -> id  (id можно передать в Audio.StopSound/SetSoundPosition)
             lua_pushstring(L, "PlaySound");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* path = luaL_checkstring(LS, 1);
                 float vol = lua_isnumber(LS, 2) ? (float)lua_tonumber(LS, 2) : 1.0f;
-                AudioEngine::Get().PlaySound(path, vol);
+                int id = AudioEngine::Get().PlaySound(path, vol);
+                lua_pushinteger(LS, id);
+                return 1;
+            }, 0);
+            lua_settable(L, -3);
+
+            // Audio.StopSound(id)
+            lua_pushstring(L, "StopSound");
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
+                int id = (int)luaL_checkinteger(LS, 1);
+                AudioEngine::Get().StopSound(id);
                 return 0;
-            });
+            }, 0);
+            lua_settable(L, -3);
+
+            // Audio.SetListenerPosition(x, y, z)
+            lua_pushstring(L, "SetListenerPosition");
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
+                float x = (float)luaL_optnumber(LS, 1, 0.0);
+                float y = (float)luaL_optnumber(LS, 2, 0.0);
+                float z = (float)luaL_optnumber(LS, 3, 0.0);
+                AudioEngine::Get().SetListenerPosition(x, y, z);
+                return 0;
+            }, 0);
+            lua_settable(L, -3);
+
+            // Audio.SetSoundPosition(id, x, y, z)  -- включает 3D-затухание по расстоянию для этого звука
+            lua_pushstring(L, "SetSoundPosition");
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
+                int id = (int)luaL_checkinteger(LS, 1);
+                float x = (float)luaL_optnumber(LS, 2, 0.0);
+                float y = (float)luaL_optnumber(LS, 3, 0.0);
+                float z = (float)luaL_optnumber(LS, 4, 0.0);
+                AudioEngine::Get().SetSoundPosition(id, x, y, z);
+                return 0;
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.PlayMusic(path, volume?)
             lua_pushstring(L, "PlayMusic");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* path = luaL_checkstring(LS, 1);
                 float vol = lua_isnumber(LS, 2) ? (float)lua_tonumber(LS, 2) : 1.0f;
                 AudioEngine::Get().PlayMusic(path, vol);
                 return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.StopMusic()
             lua_pushstring(L, "StopMusic");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 AudioEngine::Get().StopMusic(); return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.PauseMusic()
             lua_pushstring(L, "PauseMusic");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 AudioEngine::Get().PauseMusic(); return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.ResumeMusic()
             lua_pushstring(L, "ResumeMusic");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 AudioEngine::Get().ResumeMusic(); return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.StopAllSounds()
             lua_pushstring(L, "StopAllSounds");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 AudioEngine::Get().StopAllSounds(); return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.SetMusicVolume(v)
             lua_pushstring(L, "SetMusicVolume");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 AudioEngine::Get().SetMusicVolume((float)lua_tonumber(LS, 1)); return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.SetMasterVolume(v)
             lua_pushstring(L, "SetMasterVolume");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 AudioEngine::Get().SetMasterVolume((float)lua_tonumber(LS, 1)); return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // Audio.IsMusicPlaying() -> bool
             lua_pushstring(L, "IsMusicPlaying");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 lua_pushboolean(LS, AudioEngine::Get().IsMusicPlaying() ? 1 : 0);
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             lua_setglobal(L, "Audio");
@@ -340,6 +416,7 @@ namespace VE {
         bool                m_Initialized = false;
 
         SoundSlot           m_Pool[POOL_SIZE];
+        int                 m_NextSoundID = 0;
 
         std::unique_ptr<ma_sound> m_Music;
         bool                m_MusicPlaying = false;

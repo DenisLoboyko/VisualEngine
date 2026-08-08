@@ -6,11 +6,13 @@
 //
 //  Lua API:
 //    SceneManager.LoadScene("Assets/Scenes/menu.vescene")
+//    SceneManager.SaveScene("Assets/Scenes/menu.vescene")
 //    SceneManager.ReloadScene()
 //    SceneManager.GetCurrentScene()  -> string
 //
 //  C++ API:
 //    VE::SceneManager::Get().RequestLoad("Assets/Scenes/menu.vescene");
+//    VE::SceneManager::Get().RequestSave("Assets/Scenes/menu.vescene");
 //    VE::SceneManager::Get().RequestReload();
 //    VE::SceneManager::Get().Tick();   // вызывать в начале каждого кадра
 //    VE::SceneManager::Get().HasPendingLoad()
@@ -45,6 +47,28 @@ namespace VE {
         void SetLoadCallback(std::function<void(const std::string&)> cb)
         {
             m_LoadCallback = cb;
+        }
+
+        // ── Установить коллбэк сохранения (вызывается из main.cpp) ──
+        // main.cpp передаёт функцию, вызывающую SaveScene(path, objects, lights, sceneCameras)
+        // (см. SceneIO.h) — SceneManager сам не знает о SceneObject/objects[].
+        void SetSaveCallback(std::function<void(const std::string&)> cb)
+        {
+            m_SaveCallback = cb;
+        }
+
+        // ── Сохранить сцену (можно вызывать из Lua/C++). В отличие от загрузки,
+        // выполняется СРАЗУ — сохранение просто читает текущее состояние, не
+        // пересоздаёт объекты, так что откладывать до начала кадра не нужно. ──
+        void RequestSave(const std::string& path)
+        {
+            if (m_SaveCallback) {
+                std::cout << "[SceneManager] Saving: " << path << "\n";
+                m_SaveCallback(path);
+                m_CurrentPath = path;
+            } else {
+                std::cerr << "[SceneManager] No save callback set!\n";
+            }
         }
 
         // ── Запросить загрузку сцены (можно вызывать из Lua/C++) ──
@@ -102,27 +126,36 @@ namespace VE {
 
             // SceneManager.LoadScene(path)
             lua_pushstring(L, "LoadScene");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 const char* path = luaL_checkstring(LS, 1);
                 SceneManager::Get().RequestLoad(path);
                 return 0;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             // SceneManager.ReloadScene()
             lua_pushstring(L, "ReloadScene");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 SceneManager::Get().RequestReload();
                 return 0;
-            });
+            }, 0);
+            lua_settable(L, -3);
+
+            // SceneManager.SaveScene(path)
+            lua_pushstring(L, "SaveScene");
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
+                const char* path = luaL_checkstring(LS, 1);
+                SceneManager::Get().RequestSave(path);
+                return 0;
+            }, 0);
             lua_settable(L, -3);
 
             // SceneManager.GetCurrentScene() -> string
             lua_pushstring(L, "GetCurrentScene");
-            lua_pushcfunction(L, [](lua_State* LS) -> int {
+            lua_pushcclosure(L, [](lua_State* LS) -> int {
                 lua_pushstring(LS, SceneManager::Get().GetCurrent().c_str());
                 return 1;
-            });
+            }, 0);
             lua_settable(L, -3);
 
             lua_setglobal(L, "SceneManager");
@@ -133,6 +166,7 @@ namespace VE {
         SceneManager() = default;
 
         std::function<void(const std::string&)> m_LoadCallback;
+        std::function<void(const std::string&)> m_SaveCallback;
 
         std::string m_CurrentPath;
         std::string m_PendingPath;

@@ -45,1061 +45,168 @@
 
 namespace fs = std::filesystem;
 
-const char* vertSrc = R"(
-#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in vec3 aNormal;
-layout(location=2) in vec2 aTexCoord;
-out vec3 FragPos; out vec3 Normal; out vec2 TexCoord;
-uniform mat4 model,view,projection;
-void main(){
-    FragPos=vec3(model*vec4(aPos,1.0));
-    Normal=mat3(transpose(inverse(model)))*aNormal;
-    TexCoord=aTexCoord;
-    gl_Position=projection*view*vec4(FragPos,1.0);
-})";
 
-// ── Skinned-версия для моделей со скелетной анимацией ──
-// Те же атрибуты + boneIDs/weights, вершина смешивается матрицами костей
-// ДО обычной model-матрицы. Фрагментный шейдер общий с обычными объектами.
-const char* vertSkinnedSrc = R"(
-#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in vec3 aNormal;
-layout(location=2) in vec2 aTexCoord;
-layout(location=3) in vec4 aBoneIDs;   // приходят как float, приводим к int
-layout(location=4) in vec4 aWeights;
-out vec3 FragPos; out vec3 Normal; out vec2 TexCoord;
-uniform mat4 model,view,projection;
-const int MAX_BONES=100;
-uniform mat4 boneMatrices[MAX_BONES];
-void main(){
-    vec4 skinnedPos = vec4(0.0);
-    vec3 skinnedNormal = vec3(0.0);
-    float totalWeight = 0.0;
-    for(int i=0;i<4;i++){
-        int id = int(aBoneIDs[i]);
-        float w = aWeights[i];
-        if(id<0 || w<=0.0) continue;
-        mat4 bm = boneMatrices[id];
-        skinnedPos += w * (bm * vec4(aPos,1.0));
-        skinnedNormal += w * mat3(bm) * aNormal;
-        totalWeight += w;
-    }
-    if(totalWeight < 0.001){ skinnedPos = vec4(aPos,1.0); skinnedNormal = aNormal; }
+// ── Модули движка (вынесены из main.cpp для читаемости) ──
+#include "Shaders.h"
+#include "SceneTypes.h"
+#include "Material.h"
+#include "Animation.h"
+#include "SceneObject.h"
+#include "EditorGlobals.h"
+#include "InputCallbacks.h"
+#include "SceneRenderer.h"
+#include "SceneIO.h"
+#include "PrefabIO.h"
 
-    FragPos = vec3(model*skinnedPos);
-    Normal = mat3(transpose(inverse(model))) * skinnedNormal;
-    TexCoord = aTexCoord;
-    gl_Position = projection*view*vec4(FragPos,1.0);
-})";
-const char* fragSrc = R"(
-#version 330 core
-in vec3 FragPos,Normal; in vec2 TexCoord;
-out vec4 FragColor;
-uniform sampler2D uTexture;
-uniform bool useTexture;
-uniform vec3 objectColor,viewPos;
-uniform vec3  lightPos[8];
-uniform vec3  lightColor[8];
-uniform float lightIntensity[8];
-uniform float lightRange[8];
-uniform int   lightCount;
-uniform vec3  fogColor;
-uniform float fogDensity;
-uniform vec3  sunDir;        // направление НА солнце (нормализовано)
-uniform vec3  sunColor;      // цвет солнца (тёплый днём, тёмный ночью)
-uniform float sunIntensity;  // общая яркость солнца (0 ночью)
-uniform float ambientStrength;
-void main(){
-    vec3 baseColor = useTexture ? texture(uTexture,TexCoord).rgb * objectColor : objectColor;
-    vec3 norm=normalize(Normal);
-    vec3 vd=normalize(viewPos-FragPos);
-    vec3 result=vec3(ambientStrength)*baseColor;
-
-    // ── Направленный свет солнца — освещает всю сцену одинаково, как в реальности ──
-    if (sunIntensity > 0.001) {
-        float sunDiff = max(dot(norm, sunDir), 0.0);
-        float sunSpec = pow(max(dot(vd, reflect(-sunDir,norm)),0.0), 32);
-        result += (sunDiff*0.9 + sunSpec*0.25) * baseColor * sunColor * sunIntensity;
-    }
-
-    for(int i=0;i<lightCount;i++){
-        vec3 ld=normalize(lightPos[i]-FragPos);
-        float dist=length(lightPos[i]-FragPos);
-        float att=clamp(1.0-dist/lightRange[i],0.0,1.0); att*=att;
-        float diff=max(dot(norm,ld),0.0);
-        float spec=pow(max(dot(vd,reflect(-ld,norm)),0.0),32);
-        result+=(diff*0.8+spec*0.3)*baseColor*lightColor[i]*lightIntensity[i]*att;
-    }
-    if (fogDensity > 0.0001) {
-        float camDist = length(viewPos-FragPos);
-        float fogFactor = clamp(1.0 - exp(-camDist*fogDensity*0.04), 0.0, 1.0);
-        result = mix(result, fogColor, fogFactor);
-    }
-    FragColor=vec4(result,1.0);
-})";
-const char* outlineVert = R"(
-#version 330 core
-layout(location=0) in vec3 aPos;
-layout(location=1) in vec3 aNormal;
-uniform mat4 model,view,projection; uniform float outlineSize;
-void main(){ gl_Position=projection*view*model*vec4(aPos+aNormal*outlineSize,1.0); })";
-const char* outlineFrag = R"(
-#version 330 core
-out vec4 FragColor; uniform vec4 outlineColor;
-void main(){ FragColor=outlineColor; })";
-const char* gridVert = R"(
-#version 330 core
-layout(location=0) in vec3 aPos;
-uniform mat4 model,view,projection;
-void main(){ gl_Position=projection*view*model*vec4(aPos,1.0); })";
-const char* gridFrag = R"(
-#version 330 core
-out vec4 FragColor; uniform vec3 gridColor;
-void main(){ FragColor=vec4(gridColor,1.0); })";
-const char* gizmoVert = R"(
-#version 330 core
-layout(location=0) in vec3 aPos; uniform mat4 mvp;
-void main(){ gl_Position=mvp*vec4(aPos,1.0); })";
-const char* gizmoFrag = R"(
-#version 330 core
-out vec4 FragColor; uniform vec4 color;
-void main(){ FragColor=color; })";
-const char* skyboxVert = R"(
-#version 330 core
-layout(location=0) in vec3 aPos; out vec3 TexCoords;
-uniform mat4 view,projection;
-void main(){ TexCoords=aPos; vec4 pos=projection*view*vec4(aPos,1.0); gl_Position=pos.xyww; })";
-const char* skyboxFrag = R"(
-#version 330 core
-in vec3 TexCoords; out vec4 FragColor;
-uniform vec3 sunDir;          // направление на солнце (нормализовано)
-uniform float time;           // секунды (пока не используется, оставлено на будущее)
-
-float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
-
-void main(){
-    vec3 dir = normalize(TexCoords);
-
-    // ── День/ночь по высоте солнца ──
-    float sunH   = sunDir.y;
-    float dayF   = smoothstep(-0.2, 0.25, sunH);          // 0=ночь, 1=день
-    float duskF  = clamp(1.0 - abs(sunH)*2.5, 0.0, 1.0);  // пик на восходе/закате
-
-    vec3 dayZenith    = vec3(0.20, 0.50, 0.90);
-    vec3 dayHorizon   = vec3(0.65, 0.80, 0.95);
-    vec3 nightZenith  = vec3(0.010,0.012,0.035);
-    vec3 nightHorizon = vec3(0.030,0.035,0.070);
-    vec3 duskHorizon  = vec3(1.00, 0.55, 0.28);
-
-    vec3 zenith  = mix(nightZenith,  dayZenith,  dayF);
-    vec3 horizon = mix(nightHorizon, dayHorizon, dayF);
-    horizon = mix(horizon, duskHorizon, duskF*0.75);
-
-    float h = clamp(dir.y, -1.0, 1.0);
-    float horizonBlend = smoothstep(0.0, 0.55, max(h,0.0));
-    vec3 skyColor = mix(horizon, zenith, horizonBlend);
-
-    // ── Солнце ──
-    float sunDot = dot(dir, normalize(sunDir));
-    float sunDisc = smoothstep(0.9993, 0.9998, sunDot);
-    float sunGlow = pow(max(sunDot,0.0), 26.0) * 0.55;
-    vec3 sunColor = mix(vec3(1.0,0.65,0.35), vec3(1.0,0.97,0.85), dayF);
-    skyColor += (sunDisc*1.4 + sunGlow) * sunColor * step(-0.05, sunH);
-
-    // ── Луна (противоположна солнцу, видна ночью) ──
-    vec3 moonDir = -normalize(sunDir);
-    float moonDot = dot(dir, moonDir);
-    float moonDisc = smoothstep(0.9990, 0.9996, moonDot);
-    float moonGlow = pow(max(moonDot,0.0), 40.0) * 0.15;
-    skyColor += (moonDisc + moonGlow) * vec3(0.85,0.87,1.0) * (1.0-dayF);
-
-    // ── Звёзды ночью — маленькие круглые точки, не целые ячейки ──
-    float lon = atan(dir.z, dir.x);           // -pi..pi
-    float lat = asin(clamp(dir.y,-1.0,1.0));  // -pi/2..pi/2
-    vec2 starUV = vec2(lon, lat) * 120.0;
-    vec2 starCell = floor(starUV);
-    vec2 starLocal = fract(starUV) - 0.5;     // позиция внутри ячейки, центр = (0,0)
-    float starPick = hash(starCell);
-    float hasStar  = step(0.985, starPick);
-    // случайное смещение точки внутри ячейки, чтобы не были строго по сетке
-    vec2 starOffset = vec2(hash(starCell+vec2(3.1,1.7)), hash(starCell+vec2(7.2,9.4))) - 0.5;
-    float starDist  = length(starLocal - starOffset*0.4);
-    float starDot   = smoothstep(0.16, 0.0, starDist) * hasStar;
-    float twinkle   = 0.6 + 0.4*hash(starCell+vec2(time*0.0001,0.0));
-    float stars = starDot * twinkle * (1.0-dayF) * smoothstep(0.0,0.3,h);
-    skyColor += stars;
-
-    FragColor = vec4(skyColor,1.0);
-})";
-
-enum class PrimitiveType { Cube, Sphere, Cylinder, Pyramid, Capsule, Plane, Model3D };
-enum class GizmoMode { Select, Move, Rotate, Scale };
-enum class GizmoAxis { None, X, Y, Z };
-enum class SelectionType { None, Object, Light, Camera, Environment };
-
-struct LightObject {
-    std::string name; glm::vec3 pos={0,3,0},color={1,1,1};
-    float intensity=1.f,range=10.f; bool active=true;
-    VE::EntityID ecsID=VE::NULL_ENTITY;
-};
-struct CameraObject {
-    std::string name="GameCamera"; glm::vec3 pos={0,2,5},rot={0,0,0};
-    float fov=45.f; bool active=true,isPrimary=true;
-    VE::EntityID ecsID=VE::NULL_ENTITY;
-    int followTargetIndex=-1;            // индекс в objects[], -1 = свободный полёт
-    glm::vec3 followOffset={0,1.6f,0};   // смещение от followTarget (высота глаз)
-};
-// ── Material: цвет + текстура + параметры поверхности ──
-struct Material {
-    std::string name = "Material";
-    glm::vec3   color = {1.f,1.f,1.f};
-    std::string texturePath;
-    GLuint      textureID = 0;
-    float       roughness = 0.5f;   // 0=зеркало, 1=матовый
-    float       metallic  = 0.0f;   // 0=диэлектрик, 1=металл
-    float       tilingX = 1.f, tilingY = 1.f; // повтор текстуры
-    std::string assetPath; // путь к .mat файлу на диске (если материал сохранён как ассет)
-};
-
-// ── Сохранить материал в .mat файл (простой текстовый формат) ──
-inline void SaveMaterial(const std::string& path, const Material& m) {
-    std::ofstream f(path);
-    f << "name=" << m.name << "\n";
-    f << "color=" << m.color.x << "," << m.color.y << "," << m.color.z << "\n";
-    f << "texture=" << m.texturePath << "\n";
-    f << "roughness=" << m.roughness << "\n";
-    f << "metallic=" << m.metallic << "\n";
-    f << "tilingX=" << m.tilingX << "\n";
-    f << "tilingY=" << m.tilingY << "\n";
-}
-
-// ── Загрузить материал из .mat файла ──
-inline Material LoadMaterial(const std::string& path) {
-    Material m;
-    m.assetPath = path;
-    m.name = fs::path(path).stem().string();
-    std::ifstream f(path);
-    std::string line;
-    while (std::getline(f, line)) {
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq+1);
-        if (key=="name") m.name = val;
-        else if (key=="color") {
-            sscanf(val.c_str(), "%f,%f,%f", &m.color.x, &m.color.y, &m.color.z);
-        }
-        else if (key=="texture") {
-            m.texturePath = val;
-            if (!val.empty() && fs::exists(val)) m.textureID = VE::LoadTexture(val);
-        }
-        else if (key=="roughness") m.roughness = std::stof(val);
-        else if (key=="metallic")  m.metallic  = std::stof(val);
-        else if (key=="tilingX")   m.tilingX   = std::stof(val);
-        else if (key=="tilingY")   m.tilingY   = std::stof(val);
-    }
-    return m;
-}
-
-// ═══════════════════════════════════════════════════════
-//   КАСТОМНАЯ ПОКАДРОВАЯ АНИМАЦИЯ ОБЪЕКТА (как Animation window в Unity)
-//   Работает с ЛЮБЫМ объектом (куб, сфера, свет...) — двигает/крутит/
-//   масштабирует его по ключевым кадрам. Независима от скелетной
-//   анимации импортированных моделей (та живёт в Model.h).
-// ═══════════════════════════════════════════════════════
-struct ObjectKeyframe {
-    float time = 0.f; // секунды от начала клипа
-    glm::vec3 pos{0}, rot{0}, scale{1};
-};
-struct ObjectAnimClip {
-    std::string name = "Clip";
-    std::vector<ObjectKeyframe> keys;
-    bool loop = true;
-};
-
-// Линейная интерполяция позы объекта в момент t внутри клипа.
-// Кадры должны быть отсортированы по времени (сортируем при добавлении).
-void SampleObjectClip(ObjectAnimClip& clip, float t, glm::vec3& outPos, glm::vec3& outRot, glm::vec3& outScale) {
-    if (clip.keys.empty()) { outPos=glm::vec3(0); outRot=glm::vec3(0); outScale=glm::vec3(1); return; }
-    if (clip.keys.size()==1) { outPos=clip.keys[0].pos; outRot=clip.keys[0].rot; outScale=clip.keys[0].scale; return; }
-    if (t <= clip.keys.front().time) { outPos=clip.keys.front().pos; outRot=clip.keys.front().rot; outScale=clip.keys.front().scale; return; }
-    if (t >= clip.keys.back().time)  { outPos=clip.keys.back().pos;  outRot=clip.keys.back().rot;  outScale=clip.keys.back().scale;  return; }
-    for (size_t i=0;i+1<clip.keys.size();i++) {
-        if (t >= clip.keys[i].time && t <= clip.keys[i+1].time) {
-            float span = clip.keys[i+1].time - clip.keys[i].time;
-            float f = span>0.f ? (t-clip.keys[i].time)/span : 0.f;
-            outPos   = glm::mix(clip.keys[i].pos,   clip.keys[i+1].pos,   f);
-            outRot   = glm::mix(clip.keys[i].rot,   clip.keys[i+1].rot,   f);
-            outScale = glm::mix(clip.keys[i].scale, clip.keys[i+1].scale, f);
-            return;
-        }
-    }
-}
-
-struct SceneObject {
-    std::string name;
-    glm::vec3 pos={0,0,0},rot={0,0,0},scale={1,1,1},color={0.8f,0.6f,0.3f};
-    PrimitiveType type=PrimitiveType::Cube;
-    std::string modelPath;
-    std::vector<std::string> scriptPaths;  // несколько скриптов на объект (как компоненты в Unity/Godot)
-    std::shared_ptr<VE::Model> model;
-    bool active=true; VE::EntityID ecsID=VE::NULL_ENTITY;
-    bool hasScript=false, hasRigidBody=false;
-    float mass=1.f; bool useGravity=true;
-    int parentIndex=-1;
-    glm::vec3 localOffset={0,0,0};
-    std::string texturePath;     // оставлено для обратной совместимости со старыми сценами
-    GLuint textureID=0;
-    std::vector<Material> materials;  // список материалов (слот 0 = основной)
-    int activeMaterial = 0;            // какой материал сейчас выбран в инспекторе
-    std::vector<std::shared_ptr<VE::LuaEngine>> luaInstances; // Lua-движки для Play-режима (по одному на скрипт)
-    float lookPitch=0.f; // взгляд камеры вверх/вниз (FPS) — НЕ вращает саму модель объекта
-    // ── Скелетная анимация (если у model есть кости/клипы) ──
-    int   animIndex   = -1;    // индекс текущего клипа в obj.model->animations, -1 = не играет
-    float animTime    = 0.f;   // секунды с начала клипа
-    bool  animPlaying = false;
-    bool  animLoop    = true;
-    // ── Кастомная покадровая анимация (работает для ЛЮБОГО объекта) ──
-    std::vector<ObjectAnimClip> customClips;
-    int   customClipIndex   = -1;
-    float customAnimTime    = 0.f;
-    bool  customAnimPlaying = false;
-};
-
-struct SavedTransform { glm::vec3 pos,rot,scale; };
-
-struct ConsoleEntry { std::string msg; int level; };
-std::vector<ConsoleEntry> consoleLog;
-void logInfo (const std::string& m){ consoleLog.push_back({m,0}); }
-void logWarn (const std::string& m){ consoleLog.push_back({m,1}); }
-void logError(const std::string& m){ consoleLog.push_back({m,2}); }
-
-// ── Консольные команды ──
-static char g_CmdBuf[512] = {};
-static std::vector<std::string> g_CmdHistory;
-static int  g_CmdHistoryIdx    = -1;
-static bool g_ConsoleFocusInput = false;
-
-struct Ray { glm::vec3 origin,dir; };
-Ray screenToRay(double mx,double my,int w,int h,const glm::mat4& v,const glm::mat4& p){
-    float nx=(2.f*mx/w)-1.f,ny=1.f-(2.f*my/h);
-    glm::vec4 eye=glm::inverse(p)*glm::vec4(nx,ny,-1,1);
-    eye=glm::vec4(eye.x,eye.y,-1,0);
-    return{glm::vec3(glm::inverse(v)*glm::vec4(0,0,0,1)),glm::normalize(glm::vec3(glm::inverse(v)*eye))};
-}
-bool rayAABB(const Ray& r,glm::vec3 c,glm::vec3 hs,float& t){
-    glm::vec3 mn=c-hs,mx=c+hs;float tmin=-1e9f,tmax=1e9f;
-    for(int i=0;i<3;i++){
-        if(fabs(r.dir[i])<1e-6f){if(r.origin[i]<mn[i]||r.origin[i]>mx[i])return false;}
-        else{float t1=(mn[i]-r.origin[i])/r.dir[i],t2=(mx[i]-r.origin[i])/r.dir[i];
-            if(t1>t2)std::swap(t1,t2);tmin=std::max(tmin,t1);tmax=std::min(tmax,t2);if(tmin>tmax)return false;}
-    }
-    t=tmin>0?tmin:tmax;return t>0;
-}
-float rayPlaneT(const Ray& r,glm::vec3 n,glm::vec3 p){
-    float d=glm::dot(n,r.dir);if(fabs(d)<1e-6f)return-1;
-    return glm::dot(n,p-r.origin)/d;
-}
-bool gizmoArrowHit(const Ray& ray,glm::vec3 op,glm::vec3 ax,float gs,float& t){
-    glm::vec3 end=op+ax*gs;
-    return rayAABB(ray,(glm::min(op,end)+glm::max(op,end))*.5f,(glm::max(op,end)-glm::min(op,end))*.5f+0.08f*gs,t);
-}
-
-VE::Camera camera(glm::vec3(0,3,8));
-VE::Camera gameCamera(glm::vec3(0,2,5));
-float lastX=640,lastY=360,deltaTime=0,lastFrame=0;
-bool firstMouse=true,rightMouseDown=false;
-bool leftDown=false,leftClickThisFrame=false;
-double clickX=0,clickY=0,mouseX=0,mouseY=0;
-static int g_DragHoverObj = -1; // объект под курсором во время drag&drop
-double g_RawMouseDX=0,g_RawMouseDY=0; // дельта мыши за кадр, для FPS-камеры из Lua
-double g_LastRawMouseX=0,g_LastRawMouseY=0; bool g_RawMouseFirst=true;
-bool g_MouseCaptured=false; // курсор спрятан и зациклен (FPS look) — клик по Game / Esc переключают
-GizmoMode gizmoMode=GizmoMode::Move;
-GizmoAxis dragAxis=GizmoAxis::None;
-glm::vec3 dragStartPos,dragStartRot,dragStartScale,dragStartHit;
-bool isPlaying=false,isPaused=false;
-
-// ═══════════════════════════════════════════════════════
-//   ENVIRONMENT — процедурное небо (время суток, облака)
-// ═══════════════════════════════════════════════════════
-float g_TimeOfDay   = 12.0f;  // часы, 0..24 (6=рассвет, 12=полдень, 18=закат, 0/24=полночь)
-float g_FogDensity = 0.0f;                          // 0..1 — плотность тумана (0 = выкл)
-glm::vec3 g_FogColor = glm::vec3(0.6f,0.65f,0.7f);  // цвет тумана
-float g_SunIntensity   = 1.0f;   // множитель яркости солнца (0 = выключить)
-float g_AmbientStrength = 0.12f; // фоновая подсветка (чтобы тени не были чёрными)
-std::vector<SceneObject>* g_LuaObjectsPtr = nullptr; // указывает на objects[] из main(), для Animation API
-
-glm::vec3 ComputeSunDir(float timeOfDay){
-    float frac  = timeOfDay/24.0f;
-    float angle = frac*2.0f*3.14159265f - 3.14159265f*0.5f;
-    return glm::normalize(glm::vec3(cosf(angle), sinf(angle), 0.25f));
-}
-
-void drawProceduralSky(unsigned int shaderID, const glm::mat4& view, const glm::mat4& proj,
-                        unsigned int skyVAO, glm::vec3 sunDir, float timeSec)
+// ════════════════════════════════════════════════════════════════
+// Функция для динамического ресайза Viewport FBO
+// Вызывается когда размер ImGui Viewport изменился
+// ════════════════════════════════════════════════════════════════
+void ResizeViewportFBO(int newWidth, int newHeight, 
+                       unsigned int& sceneMSFBO, unsigned int& sceneMSColorRBO, unsigned int& sceneMSDepthRBO,
+                       unsigned int& gameMSFBO, unsigned int& gameMSColorRBO, unsigned int& gameMSDepthRBO,
+                       unsigned int& sceneHDRFBO, unsigned int& sceneHDRTex,
+                       unsigned int& gameHDRFBO, unsigned int& gameHDRTex,
+                       unsigned int& sceneFBO, unsigned int& sceneTex, unsigned int& sceneRBO,
+                       unsigned int& gameFBO, unsigned int& gameTex, unsigned int& gameRBO)
 {
-    glDepthFunc(GL_LEQUAL);
-    glUseProgram(shaderID);
-    glm::mat4 skyView = glm::mat4(glm::mat3(view));
-    glUniformMatrix4fv(glGetUniformLocation(shaderID,"view"),1,GL_FALSE,glm::value_ptr(skyView));
-    glUniformMatrix4fv(glGetUniformLocation(shaderID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-    glUniform3f(glGetUniformLocation(shaderID,"sunDir"),sunDir.x,sunDir.y,sunDir.z);
-    glUniform1f(glGetUniformLocation(shaderID,"time"),timeSec);
-    glBindVertexArray(skyVAO);
-    glDrawArrays(GL_TRIANGLES,0,36);
-    glBindVertexArray(0);
-    glDepthFunc(GL_LESS);
-}
-std::vector<std::string> g_DroppedFiles; // пути файлов, перетащенных из Windows в окно движка
-std::vector<SavedTransform> savedTransforms;
-ImVec2 g_VpPos(0,0),g_VpSize(940,600);
+    // Минимальный размер - 100x100
+    if (newWidth < 100) newWidth = 100;
+    if (newHeight < 100) newHeight = 100;
 
-// ═══════════════════════════════════════════════════════
-//   EDITOR PREFERENCES — как EditorSettings в Godot
-// ═══════════════════════════════════════════════════════
-struct EditorPrefs {
-    // General
-    bool  autosaveEnabled   = true;
-    float autosaveMinutes   = 5.0f;
-    std::string defaultProjectPath = "";
-    // Interface
-    ImVec4 accentColor = ImVec4(0.28f,0.16f,0.50f,1.f);
-    float  uiScale = 1.0f;
-    // Viewport
-    float camSpeed       = 5.0f;
-    float camSensitivity = 0.1f;
-    bool  invertY         = false;
+    logInfo("ResizeViewportFBO: " + std::to_string(newWidth) + "x" + std::to_string(newHeight));
 
-    static std::string PrefsPath(){ return "editor_prefs.cfg"; }
+    const int MSAA_SAMPLES = 4;
 
-    void Save(){
-        std::ofstream f(PrefsPath());
-        if(!f) return;
-        f << "autosaveEnabled=" << (autosaveEnabled?1:0) << "\n";
-        f << "autosaveMinutes=" << autosaveMinutes << "\n";
-        f << "defaultProjectPath=" << defaultProjectPath << "\n";
-        f << "accentR=" << accentColor.x << "\n";
-        f << "accentG=" << accentColor.y << "\n";
-        f << "accentB=" << accentColor.z << "\n";
-        f << "uiScale=" << uiScale << "\n";
-        f << "camSpeed=" << camSpeed << "\n";
-        f << "camSensitivity=" << camSensitivity << "\n";
-        f << "invertY=" << (invertY?1:0) << "\n";
-    }
+    // ══ Удаляем старые MSAA FBO ══
+    glDeleteFramebuffers(1, &sceneMSFBO);
+    glDeleteRenderbuffers(1, &sceneMSColorRBO);
+    glDeleteRenderbuffers(1, &sceneMSDepthRBO);
+    glDeleteFramebuffers(1, &gameMSFBO);
+    glDeleteRenderbuffers(1, &gameMSColorRBO);
+    glDeleteRenderbuffers(1, &gameMSDepthRBO);
 
-    void Load(){
-        std::ifstream f(PrefsPath());
-        if(!f) return;
-        std::string line;
-        while(std::getline(f,line)){
-            auto eq=line.find('=');
-            if(eq==std::string::npos) continue;
-            std::string key=line.substr(0,eq), val=line.substr(eq+1);
-            if(key=="autosaveEnabled") autosaveEnabled = (val=="1");
-            else if(key=="autosaveMinutes") autosaveMinutes = std::stof(val);
-            else if(key=="defaultProjectPath") defaultProjectPath = val;
-            else if(key=="accentR") accentColor.x = std::stof(val);
-            else if(key=="accentG") accentColor.y = std::stof(val);
-            else if(key=="accentB") accentColor.z = std::stof(val);
-            else if(key=="uiScale") uiScale = std::stof(val);
-            else if(key=="camSpeed") camSpeed = std::stof(val);
-            else if(key=="camSensitivity") camSensitivity = std::stof(val);
-            else if(key=="invertY") invertY = (val=="1");
-        }
-    }
-};
-EditorPrefs g_Prefs;
-bool g_ShowPreferences = false;
+    // ══ Удаляем старые Resolve FBO ══
+    glDeleteFramebuffers(1, &sceneFBO);
+    glDeleteTextures(1, &sceneTex);
+    glDeleteRenderbuffers(1, &sceneRBO);
+    glDeleteFramebuffers(1, &gameFBO);
+    glDeleteTextures(1, &gameTex);
+    glDeleteRenderbuffers(1, &gameRBO);
 
-// ── Player mode: движок запущен как самостоятельная игра (без редактора) ──
-// Активируется аргументом командной строки: VisualEngine.exe --play "Assets/scene.vescene"
-bool g_PlayerMode = false;
-std::string g_PlayerScenePath = "";
-std::string g_OverrideProjectRoot = ""; // передаётся из VisualHub через --project
-bool g_PlayerAutoPlayPending = false;
+    // ══ Удаляем старые HDR FBO (если есть) ══
+    glDeleteFramebuffers(1, &sceneHDRFBO);
+    glDeleteTextures(1, &sceneHDRTex);
+    glDeleteFramebuffers(1, &gameHDRFBO);
+    glDeleteTextures(1, &gameHDRTex);
 
-GLFWcursorposfun g_PrevCursorPosCallback = nullptr; // коллбэк ImGui, который нужно пробросить дальше
+    // ════════════════════════════════════════════════════════════════
+    // Пересоздаём Scene MSAA FBO
+    // ══════════════════════════════════════════════════════════════════
+    glGenFramebuffers(1, &sceneMSFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneMSFBO);
 
-void mouse_callback(GLFWwindow* w,double x,double y){
-    mouseX=x;mouseY=y;
-    // Сырая дельта для Lua (НЕ зависит от rightMouseDown — нужен всегда в Play)
-    if(g_RawMouseFirst){g_LastRawMouseX=x;g_LastRawMouseY=y;g_RawMouseFirst=false;}
-    g_RawMouseDX=x-g_LastRawMouseX; g_RawMouseDY=y-g_LastRawMouseY;
-    g_LastRawMouseX=x; g_LastRawMouseY=y;
-    // Пробрасываем событие в ImGui — иначе его собственная обработка мыши сломается
-    if(g_PrevCursorPosCallback) g_PrevCursorPosCallback(w,x,y);
-    if(!rightMouseDown)return;
-    if(firstMouse){lastX=x;lastY=y;firstMouse=false;}
-    camera.ProcessMouse(x-lastX,lastY-y);lastX=x;lastY=y;
-}
-void mouse_button_callback(GLFWwindow* w,int btn,int action,int){
-    if(btn==GLFW_MOUSE_BUTTON_RIGHT){rightMouseDown=(action==GLFW_PRESS);firstMouse=true;}
-    if(btn==GLFW_MOUSE_BUTTON_LEFT){
-        if(action==GLFW_PRESS){leftDown=true;leftClickThisFrame=true;double cx,cy;glfwGetCursorPos(w,&cx,&cy);clickX=cx;clickY=cy;}
-        else{leftDown=false;dragAxis=GizmoAxis::None;}
-    }
-}
+    glGenRenderbuffers(1, &sceneMSColorRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, sceneMSColorRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA_SAMPLES, GL_RGBA16F, newWidth, newHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, sceneMSColorRBO);
 
-unsigned int setupCubeVAO(){
-    float v[]={
-        -0.5f,-0.5f,-0.5f,0,0,-1, 0,0,  0.5f,-0.5f,-0.5f,0,0,-1, 1,0,  0.5f,0.5f,-0.5f,0,0,-1, 1,1,  -0.5f,0.5f,-0.5f,0,0,-1, 0,1,
-        -0.5f,-0.5f,0.5f,0,0,1, 0,0,  0.5f,-0.5f,0.5f,0,0,1, 1,0,  0.5f,0.5f,0.5f,0,0,1, 1,1,  -0.5f,0.5f,0.5f,0,0,1, 0,1,
-        -0.5f,-0.5f,-0.5f,-1,0,0, 0,0,  -0.5f,0.5f,-0.5f,-1,0,0, 1,0,  -0.5f,0.5f,0.5f,-1,0,0, 1,1,  -0.5f,-0.5f,0.5f,-1,0,0, 0,1,
-        0.5f,-0.5f,-0.5f,1,0,0, 0,0,  0.5f,0.5f,-0.5f,1,0,0, 1,0,  0.5f,0.5f,0.5f,1,0,0, 1,1,  0.5f,-0.5f,0.5f,1,0,0, 0,1,
-        -0.5f,-0.5f,-0.5f,0,-1,0, 0,0,  0.5f,-0.5f,-0.5f,0,-1,0, 1,0,  0.5f,-0.5f,0.5f,0,-1,0, 1,1,  -0.5f,-0.5f,0.5f,0,-1,0, 0,1,
-        -0.5f,0.5f,-0.5f,0,1,0, 0,0,  0.5f,0.5f,-0.5f,0,1,0, 1,0,  0.5f,0.5f,0.5f,0,1,0, 1,1,  -0.5f,0.5f,0.5f,0,1,0, 0,1
-    };
-    unsigned int idx[]={0,1,2,2,3,0,4,5,6,6,7,4,8,9,10,10,11,8,12,13,14,14,15,12,16,17,18,18,19,16,20,21,22,22,23,20};
-    unsigned int VAO,VBO,EBO;
-    glGenVertexArrays(1,&VAO);glGenBuffers(1,&VBO);glGenBuffers(1,&EBO);glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER,VBO);glBufferData(GL_ARRAY_BUFFER,sizeof(v),v,GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,EBO);glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(idx),idx,GL_STATIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,8*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,8*sizeof(float),(void*)(3*sizeof(float)));glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2,2,GL_FLOAT,GL_FALSE,8*sizeof(float),(void*)(6*sizeof(float)));glEnableVertexAttribArray(2);
-    glBindVertexArray(0);return VAO;
-}
-unsigned int buildArrowVAO(int& cnt){
-    std::vector<float> v;v.insert(v.end(),{0,0,0,0,0.65f,0});
-    for(int i=0;i<12;i++){float a=2*3.14159f*i/12,b=2*3.14159f*(i+1)/12;v.insert(v.end(),{0.04f*cos(a),0.65f,0.04f*sin(a),0.04f*cos(b),0.65f,0.04f*sin(b),0,1,0});}
-    cnt=v.size()/3;unsigned int VAO,VBO;
-    glGenVertexArrays(1,&VAO);glGenBuffers(1,&VBO);glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER,VBO);glBufferData(GL_ARRAY_BUFFER,v.size()*sizeof(float),v.data(),GL_STATIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
-    glBindVertexArray(0);return VAO;
-}
-void drawMesh(const SceneObject& obj,unsigned int cubeVAO,VE::Mesh& sph,VE::Mesh& cyl,VE::Mesh& pyr,VE::Mesh& cap,VE::Mesh& pln){
-    switch(obj.type){
-        case PrimitiveType::Cube:     glBindVertexArray(cubeVAO);glDrawElements(GL_TRIANGLES,36,GL_UNSIGNED_INT,0);break;
-        case PrimitiveType::Sphere:   glBindVertexArray(sph.VAO);glDrawElements(GL_TRIANGLES,sph.indexCount,GL_UNSIGNED_INT,0);break;
-        case PrimitiveType::Cylinder: glBindVertexArray(cyl.VAO);glDrawElements(GL_TRIANGLES,cyl.indexCount,GL_UNSIGNED_INT,0);break;
-        case PrimitiveType::Pyramid:  glBindVertexArray(pyr.VAO);glDrawElements(GL_TRIANGLES,pyr.indexCount,GL_UNSIGNED_INT,0);break;
-        case PrimitiveType::Capsule:  glBindVertexArray(cap.VAO);glDrawElements(GL_TRIANGLES,cap.indexCount,GL_UNSIGNED_INT,0);break;
-        case PrimitiveType::Plane:    glBindVertexArray(pln.VAO);glDrawElements(GL_TRIANGLES,pln.indexCount,GL_UNSIGNED_INT,0);break;
-        case PrimitiveType::Model3D:  if(obj.model&&obj.model->loaded)obj.model->Draw();break;
-    }
-}
-void openInVSCode(const std::string& path){
-    std::string cmd="start \"\" code \""+path+"\"";
-    system(cmd.c_str());
-}
+    glGenRenderbuffers(1, &sceneMSDepthRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, sceneMSDepthRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA_SAMPLES, GL_DEPTH24_STENCIL8, newWidth, newHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sceneMSDepthRBO);
 
-VE::Scene scene;
-void addObject(std::vector<SceneObject>& objects,PrimitiveType type,int& sel,SelectionType& selType){
-    const char* n[]={"Cube","Sphere","Cylinder","Pyramid","Capsule","Plane","Model"};
-    SceneObject o;
-    o.name=std::string(n[(int)type])+"_"+std::to_string(objects.size()+1);
-    o.pos=glm::vec3(0,0.5f,0);o.type=type;o.color=glm::vec3(0.4f,0.6f,0.9f);
-    o.ecsID=scene.CreateEntity(o.name);
-    scene.GetTransform(o.ecsID).Position=o.pos;
-    scene.GetTransform(o.ecsID).Scale=o.scale;
-    scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
-    objects.push_back(o);sel=(int)objects.size()-1;selType=SelectionType::Object;
-    logInfo("Created "+o.name);
-}
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-void drawRing(unsigned int sid,glm::vec3 center,int axis,float gs,glm::vec4 col,const glm::mat4& vp){
-    const int SEG=64; std::vector<float> pts;
-    for(int j=0;j<=SEG;j++){float a=2.f*3.14159f*j/SEG,cs=cos(a)*gs,sn=sin(a)*gs;
-        if(axis==0) pts.insert(pts.end(),{0,cs,sn});
-        else if(axis==1) pts.insert(pts.end(),{cs,0,sn});
-        else pts.insert(pts.end(),{cs,sn,0});}
-    unsigned int rVAO,rVBO;glGenVertexArrays(1,&rVAO);glGenBuffers(1,&rVBO);
-    glBindVertexArray(rVAO);glBindBuffer(GL_ARRAY_BUFFER,rVBO);
-    glBufferData(GL_ARRAY_BUFFER,pts.size()*sizeof(float),pts.data(),GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
-    glm::mat4 m=glm::translate(glm::mat4(1),center);
-    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp*m));
-    glUniform4f(glGetUniformLocation(sid,"color"),col.r,col.g,col.b,col.a);
-    glLineWidth(2.5f);glDrawArrays(GL_LINE_STRIP,0,SEG+1);
-    glDeleteVertexArrays(1,&rVAO);glDeleteBuffers(1,&rVBO);
-}
-// Рисует значок камеры или света как billboard, повёрнутый к камере.
-// Вместо плоского цветного квадрата — узнаваемая иконка на тёмной круглой подложке.
-void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const glm::mat4& view,const glm::mat4& proj,bool isLight){
-    glm::vec3 right=glm::normalize(glm::vec3(view[0][0],view[1][0],view[2][0]));
-    glm::vec3 up=glm::normalize(glm::vec3(view[0][1],view[1][1],view[2][1]));
-    float R=size*0.5f;
+    // ══════════════════════════════════════════════════════════════════
+    // Пересоздаём Game MSAA FBO
+    // ══════════════════════════════════════════════════════════════════
+    glGenFramebuffers(1, &gameMSFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, gameMSFBO);
 
-    auto bp=[&](float x,float y)->glm::vec3{ return pos+right*(x*R)+up*(y*R); };
+    glGenRenderbuffers(1, &gameMSColorRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, gameMSColorRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA_SAMPLES, GL_RGBA16F, newWidth, newHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, gameMSColorRBO);
 
-    unsigned int vao=0,vbo=0;
-    glGenVertexArrays(1,&vao);glGenBuffers(1,&vbo);
-    glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
-    glEnableVertexAttribArray(0);
-    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(proj*view*glm::mat4(1)));
+    glGenRenderbuffers(1, &gameMSDepthRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, gameMSDepthRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA_SAMPLES, GL_DEPTH24_STENCIL8, newWidth, newHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, gameMSDepthRBO);
 
-    auto upload=[&](const std::vector<float>& v){
-        glBufferData(GL_ARRAY_BUFFER,v.size()*sizeof(float),v.data(),GL_DYNAMIC_DRAW);
-    };
-    auto setColor=[&](glm::vec4 c){
-        glUniform4f(glGetUniformLocation(sid,"color"),c.r,c.g,c.b,c.a);
-    };
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_DEPTH_TEST);
+    // ══════════════════════════════════════════════════════════════════
+    // Пересоздаём Scene Resolve FBO (MSAA → single-sampled)
+    // ══════════════════════════════════════════════════════════════════
+    glGenFramebuffers(1, &sceneFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
 
-    // ── 1. Тёмная круглая подложка для контраста на любом фоне ──
-    {
-        const int SEG=20;
-        std::vector<float> f; f.reserve((SEG+2)*3);
-        glm::vec3 c0=pos; f.insert(f.end(),{c0.x,c0.y,c0.z});
-        for(int i=0;i<=SEG;i++){
-            float a=2.f*3.14159265f*(float)i/SEG;
-            glm::vec3 v=bp(cosf(a),sinf(a));
-            f.insert(f.end(),{v.x,v.y,v.z});
-        }
-        upload(f); setColor(glm::vec4(0.03f,0.03f,0.04f,0.55f));
-        glDrawArrays(GL_TRIANGLE_FAN,0,(GLsizei)(f.size()/3));
-    }
+    glGenTextures(1, &sceneTex);
+    glBindTexture(GL_TEXTURE_2D, sceneTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, newWidth, newHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneTex, 0);
 
-    if(isLight){
-        // ── 2a. Лампочка: кружок-«голова» + основание + лучи ──
-        {
-            const int SEG=14;
-            std::vector<float> f; f.reserve((SEG+2)*3);
-            glm::vec3 c0=bp(0,0.10f); f.insert(f.end(),{c0.x,c0.y,c0.z});
-            for(int i=0;i<=SEG;i++){
-                float a=2.f*3.14159265f*(float)i/SEG;
-                glm::vec3 v=bp(cosf(a)*0.34f, 0.10f+sinf(a)*0.34f);
-                f.insert(f.end(),{v.x,v.y,v.z});
-            }
-            upload(f); setColor(col);
-            glDrawArrays(GL_TRIANGLE_FAN,0,(GLsizei)(f.size()/3));
-        }
-        {
-            glm::vec3 a=bp(-0.10f,-0.24f),b=bp(0.10f,-0.24f),c=bp(0.10f,-0.44f),d=bp(-0.10f,-0.44f);
-            std::vector<float> f={a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z, c.x,c.y,c.z,d.x,d.y,d.z,a.x,a.y,a.z};
-            upload(f); setColor(col*0.65f+glm::vec4(0,0,0,0.35f));
-            glDrawArrays(GL_TRIANGLES,0,6);
-        }
-        {
-            std::vector<float> f;
-            for(int i=0;i<6;i++){
-                float a=2.f*3.14159265f*((float)i/6.f)+0.5f;
-                glm::vec3 p0=bp(cosf(a)*0.42f, 0.10f+sinf(a)*0.42f);
-                glm::vec3 p1=bp(cosf(a)*0.62f, 0.10f+sinf(a)*0.62f);
-                f.insert(f.end(),{p0.x,p0.y,p0.z,p1.x,p1.y,p1.z});
-            }
-            upload(f); setColor(col);
-            glLineWidth(2.f);
-            glDrawArrays(GL_LINES,0,(GLsizei)(f.size()/3));
-        }
-    } else {
-        // ── 2b. Камера: корпус + объектив + видоискатель ──
-        {
-            glm::vec3 a=bp(-0.44f,-0.20f),b=bp(0.30f,-0.20f),c=bp(0.30f,0.20f),d=bp(-0.44f,0.20f);
-            std::vector<float> f={a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z, c.x,c.y,c.z,d.x,d.y,d.z,a.x,a.y,a.z};
-            upload(f); setColor(col);
-            glDrawArrays(GL_TRIANGLES,0,6);
-        }
-        {
-            glm::vec3 a=bp(-0.16f,0.20f),b=bp(0.06f,0.20f),c=bp(0.06f,0.36f),d=bp(-0.16f,0.36f);
-            std::vector<float> f={a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z, c.x,c.y,c.z,d.x,d.y,d.z,a.x,a.y,a.z};
-            upload(f); setColor(col);
-            glDrawArrays(GL_TRIANGLES,0,6);
-        }
-        {
-            const int SEG=16;
-            std::vector<float> f; f.reserve((SEG+2)*3);
-            glm::vec3 c0=bp(0.30f,0.0f); f.insert(f.end(),{c0.x,c0.y,c0.z});
-            for(int i=0;i<=SEG;i++){
-                float a=2.f*3.14159265f*(float)i/SEG;
-                glm::vec3 v=bp(0.30f+cosf(a)*0.20f, sinf(a)*0.20f);
-                f.insert(f.end(),{v.x,v.y,v.z});
-            }
-            upload(f); setColor(glm::vec4(0.04f,0.04f,0.05f,1.f));
-            glDrawArrays(GL_TRIANGLE_FAN,0,(GLsizei)(f.size()/3));
+    glGenRenderbuffers(1, &sceneRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, sceneRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, newWidth, newHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sceneRBO);
 
-            std::vector<float> ring; ring.reserve((SEG+1)*3);
-            for(int i=0;i<=SEG;i++){
-                float a=2.f*3.14159265f*(float)i/SEG;
-                glm::vec3 v=bp(0.30f+cosf(a)*0.20f, sinf(a)*0.20f);
-                ring.insert(ring.end(),{v.x,v.y,v.z});
-            }
-            upload(ring); setColor(col);
-            glLineWidth(1.5f);
-            glDrawArrays(GL_LINE_LOOP,0,(GLsizei)(ring.size()/3));
-        }
-    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ── 3. Тонкий контур подложки поверх всего — чтобы значок не сливался с фоном ──
-    {
-        const int SEG=20;
-        std::vector<float> f; f.reserve((SEG+1)*3);
-        for(int i=0;i<=SEG;i++){
-            float a=2.f*3.14159265f*(float)i/SEG;
-            glm::vec3 v=bp(cosf(a),sinf(a));
-            f.insert(f.end(),{v.x,v.y,v.z});
-        }
-        upload(f); setColor(glm::vec4(col.r,col.g,col.b,0.55f));
-        glLineWidth(1.2f);
-        glDrawArrays(GL_LINE_LOOP,0,(GLsizei)(f.size()/3));
-    }
+    // ══════════════════════════════════════════════════════════════════
+    // Пересоздаём Game Resolve FBO (MSAA → single-sampled)
+    // ══════════════════════════════════════════════════════════════════
+    glGenFramebuffers(1, &gameFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, gameFBO);
 
-    glEnable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    glDeleteVertexArrays(1,&vao);glDeleteBuffers(1,&vbo);
-}
+    glGenTextures(1, &gameTex);
+    glBindTexture(GL_TEXTURE_2D, gameTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, newWidth, newHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gameTex, 0);
 
-void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
-    VE::Shader& shader,VE::Shader& skinnedShader,VE::Shader& outlineShader,VE::Shader& gridShader,
-    VE::Shader& gizmoShader,VE::Shader& skyboxShader,
-    VE::Skybox& skybox,VE::Grid& grid,
-    unsigned int cubeVAO,VE::Mesh& sph,VE::Mesh& cyl,VE::Mesh& pyr,VE::Mesh& cap,VE::Mesh& pln,
-    unsigned int arrowVAO,int arrowCnt,
-    VE::Camera& cam,float aspect,GizmoMode gizmoMode,GizmoAxis dragAxis,
-    bool showSkybox,bool showGrid,bool showGizmos,float gs,
-    std::vector<LightObject>& lights,std::vector<CameraObject>& sceneCameras,
-    int selLight,int selCamera,SelectionType selType,int excludeIndex=-1)
-{
-    glClearColor(0.10f,0.10f,0.13f,1);
-    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);
-    glm::mat4 view=cam.GetViewMatrix(),proj=cam.GetProjectionMatrix(aspect),vp=proj*view;
-    if(showSkybox) drawProceduralSky(skyboxShader.ID,view,proj,skybox.VAO,ComputeSunDir(g_TimeOfDay),(float)glfwGetTime());
-    if(showGrid&&!isGameView) grid.Draw(gridShader.ID,view,proj);
+    glGenRenderbuffers(1, &gameRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, gameRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, newWidth, newHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, gameRBO);
 
-    // ── Направленный свет солнца: направление/цвет/яркость зависят от времени суток ──
-    glm::vec3 sunDir = ComputeSunDir(g_TimeOfDay);
-    float sunH = sunDir.y;
-    float sunDayF = glm::clamp((sunH+0.20f)/0.45f, 0.f, 1.f);
-    glm::vec3 sunCol = glm::mix(glm::vec3(0.05f,0.06f,0.12f), glm::vec3(1.0f,0.95f,0.85f), sunDayF);
-    float sunFinalIntensity = sunDayF * g_SunIntensity;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    shader.Use();
-    glUniformMatrix4fv(glGetUniformLocation(shader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(shader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-    glUniform3f(glGetUniformLocation(shader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
-    glUniform3f(glGetUniformLocation(shader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
-    glUniform1f(glGetUniformLocation(shader.ID,"fogDensity"),g_FogDensity);
-    glUniform3f(glGetUniformLocation(shader.ID,"sunDir"),sunDir.x,sunDir.y,sunDir.z);
-    glUniform3f(glGetUniformLocation(shader.ID,"sunColor"),sunCol.x,sunCol.y,sunCol.z);
-    glUniform1f(glGetUniformLocation(shader.ID,"sunIntensity"),sunFinalIntensity);
-    glUniform1f(glGetUniformLocation(shader.ID,"ambientStrength"),g_AmbientStrength);
-    int lCount=(int)std::min(lights.size(),(size_t)8);
-    glUniform1i(glGetUniformLocation(shader.ID,"lightCount"),lCount);
-    for(int i=0;i<lCount;i++){
-        std::string idx="["+std::to_string(i)+"]";
-        glUniform3f(glGetUniformLocation(shader.ID,("lightPos"+idx).c_str()),lights[i].pos.x,lights[i].pos.y,lights[i].pos.z);
-        glUniform3f(glGetUniformLocation(shader.ID,("lightColor"+idx).c_str()),lights[i].color.r,lights[i].color.g,lights[i].color.b);
-        glUniform1f(glGetUniformLocation(shader.ID,("lightIntensity"+idx).c_str()),lights[i].intensity);
-        glUniform1f(glGetUniformLocation(shader.ID,("lightRange"+idx).c_str()),lights[i].range);
-    }
-    glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);
+    // ══════════════════════════════════════════════════════════════════
+    // Пересоздаём HDR FBO для Scene
+    // ══════════════════════════════════════════════════════════════════
+    glGenFramebuffers(1, &sceneHDRFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneHDRFBO);
+    glGenTextures(1, &sceneHDRTex);
+    glBindTexture(GL_TEXTURE_2D, sceneHDRTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, newWidth, newHeight, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneHDRTex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ── Те же общие uniform'ы (вид/проекция/свет/туман) настраиваем и на skinned-шейдере ──
-    skinnedShader.Use();
-    glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunDir"),sunDir.x,sunDir.y,sunDir.z);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunColor"),sunCol.x,sunCol.y,sunCol.z);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"sunIntensity"),sunFinalIntensity);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"ambientStrength"),g_AmbientStrength);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"fogDensity"),g_FogDensity);
-    glUniform1i(glGetUniformLocation(skinnedShader.ID,"lightCount"),lCount);
-    for(int i=0;i<lCount;i++){
-        std::string idx="["+std::to_string(i)+"]";
-        glUniform3f(glGetUniformLocation(skinnedShader.ID,("lightPos"+idx).c_str()),lights[i].pos.x,lights[i].pos.y,lights[i].pos.z);
-        glUniform3f(glGetUniformLocation(skinnedShader.ID,("lightColor"+idx).c_str()),lights[i].color.r,lights[i].color.g,lights[i].color.b);
-        glUniform1f(glGetUniformLocation(skinnedShader.ID,("lightIntensity"+idx).c_str()),lights[i].intensity);
-        glUniform1f(glGetUniformLocation(skinnedShader.ID,("lightRange"+idx).c_str()),lights[i].range);
-    }
-    shader.Use();
-    for(int i=0;i<(int)objects.size();i++){
-        if(!objects[i].active) continue;
-        if(i==excludeIndex) continue; // своё тело не рисуем от первого лица
-        auto& obj=objects[i];
-        if(scene.IsAlive(obj.ecsID)){auto& t=scene.GetTransform(obj.ecsID);t.Position=obj.pos;t.Rotation=obj.rot;t.Scale=obj.scale;}
-        bool isSel=(selType==SelectionType::Object&&i==sel);
-        if(!isGameView&&isSel){glStencilFunc(GL_ALWAYS,1,0xFF);glStencilMask(0xFF);}
-        else{glStencilFunc(GL_ALWAYS,0,0xFF);glStencilMask(0x00);}
-        glm::mat4 model=glm::mat4(1);
-        model=glm::translate(model,obj.pos);
-        model=glm::rotate(model,glm::radians(obj.rot.x),glm::vec3(1,0,0));
-        model=glm::rotate(model,glm::radians(obj.rot.y),glm::vec3(0,1,0));
-        model=glm::rotate(model,glm::radians(obj.rot.z),glm::vec3(0,0,1));
-        model=glm::scale(model,obj.scale);
+    // ══════════════════════════════════════════════════════════════════
+    // Пересоздаём HDR FBO для Game
+    // ══════════════════════════════════════════════════════════════════
+    glGenFramebuffers(1, &gameHDRFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, gameHDRFBO);
+    glGenTextures(1, &gameHDRTex);
+    glBindTexture(GL_TEXTURE_2D, gameHDRTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, newWidth, newHeight, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gameHDRTex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        bool useSkinning = (obj.type==PrimitiveType::Model3D && obj.model && obj.model->hasSkeleton && obj.animIndex>=0);
-        VE::Shader& activeShader = useSkinning ? skinnedShader : shader;
-        activeShader.Use();
-
-        if (useSkinning) {
-            auto boneMats = obj.model->GetBoneMatrices(obj.animIndex, obj.animTime, obj.animLoop);
-            int n = std::min((int)boneMats.size(), VE::MAX_BONES);
-            for (int b=0;b<n;b++) {
-                std::string u = "boneMatrices["+std::to_string(b)+"]";
-                glUniformMatrix4fv(glGetUniformLocation(activeShader.ID,u.c_str()),1,GL_FALSE,glm::value_ptr(boneMats[b]));
-            }
-        }
-
-        glUniformMatrix4fv(glGetUniformLocation(activeShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
-        glUniform3f(glGetUniformLocation(activeShader.ID,"objectColor"),obj.color.r,obj.color.g,obj.color.b);
-        GLuint texToBind=(obj.textureID!=0)?obj.textureID:VE::GetWhiteTexture();
-        glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texToBind);
-        glUniform1i(glGetUniformLocation(activeShader.ID,"uTexture"),0);
-        glUniform1i(glGetUniformLocation(activeShader.ID,"useTexture"),obj.textureID!=0);
-        drawMesh(obj,cubeVAO,sph,cyl,pyr,cap,pln);
-        if (useSkinning) shader.Use(); // возвращаем основной шейдер для следующих объектов
-    }
-    if(!isGameView&&selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){
-        glStencilFunc(GL_NOTEQUAL,1,0xFF);glStencilMask(0x00);glDisable(GL_DEPTH_TEST);
-        auto& obj=objects[sel];
-        glm::mat4 model=glm::translate(glm::mat4(1),obj.pos);
-        model=glm::rotate(model,glm::radians(obj.rot.x),glm::vec3(1,0,0));
-        model=glm::rotate(model,glm::radians(obj.rot.y),glm::vec3(0,1,0));
-        model=glm::rotate(model,glm::radians(obj.rot.z),glm::vec3(0,0,1));
-        model=glm::scale(model,obj.scale);
-        outlineShader.Use();
-        glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-        glUniform1f(glGetUniformLocation(outlineShader.ID,"outlineSize"),0.012f);
-        glUniform4f(glGetUniformLocation(outlineShader.ID,"outlineColor"),.35f,.65f,1,1);
-        drawMesh(obj,cubeVAO,sph,cyl,pyr,cap,pln);
-        glStencilMask(0xFF);glStencilFunc(GL_ALWAYS,0,0xFF);glEnable(GL_DEPTH_TEST);
-    }
-    if(!isGameView&&showGizmos){
-        glClear(GL_DEPTH_BUFFER_BIT);
-        gizmoShader.Use();
-        for(int i=0;i<(int)lights.size();i++){
-            bool isSel=(selType==SelectionType::Light&&i==selLight);
-            float d=glm::length(lights[i].pos-cam.Position);
-            float iconSize=glm::clamp(d*0.10f,0.28f,1.4f);
-            drawBillboard(gizmoShader.ID,lights[i].pos,isSel?glm::vec4(1,1,0,1):glm::vec4(1,.85f,.1f,1),iconSize,view,proj,true);
-            if(isSel) drawRing(gizmoShader.ID,lights[i].pos,1,lights[i].range,glm::vec4(1,.85f,.1f,.4f),vp);
-        }
-        for(int i=0;i<(int)sceneCameras.size();i++){
-            bool isSel=(selType==SelectionType::Camera&&i==selCamera);
-            glm::vec3 camWorldPos = sceneCameras[i].pos;
-            if(sceneCameras[i].followTargetIndex>=0 && sceneCameras[i].followTargetIndex<(int)objects.size())
-                camWorldPos = objects[sceneCameras[i].followTargetIndex].pos + sceneCameras[i].followOffset;
-            float d=glm::length(camWorldPos-cam.Position);
-            float iconSize=glm::clamp(d*0.10f,0.28f,1.4f);
-            drawBillboard(gizmoShader.ID,camWorldPos,isSel?glm::vec4(.3f,.9f,1,1):glm::vec4(.2f,.7f,1,1),iconSize,view,proj,false);
-        }
-        glm::vec3 gPos(0);bool showGiz=false;
-        if(selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){gPos=objects[sel].pos;showGiz=true;}
-        else if(selType==SelectionType::Light&&selLight>=0&&selLight<(int)lights.size()){gPos=lights[selLight].pos;showGiz=true;}
-        else if(selType==SelectionType::Camera&&selCamera>=0&&selCamera<(int)sceneCameras.size()){
-            auto& sc=sceneCameras[selCamera];
-            gPos = (sc.followTargetIndex>=0 && sc.followTargetIndex<(int)objects.size())
-                 ? objects[sc.followTargetIndex].pos + sc.followOffset
-                 : sc.pos;
-            showGiz=true;
-        }
-        if(showGiz&&gizmoMode!=GizmoMode::Select){
-            if(gizmoMode==GizmoMode::Move||gizmoMode==GizmoMode::Scale){
-                glBindVertexArray(arrowVAO);
-                glm::vec4 cols[3]={glm::vec4(1,.15f,.15f,1),glm::vec4(.15f,1,.15f,1),glm::vec4(.15f,.4f,1,1)};
-                float rA[3]={-90,0,90};glm::vec3 rX[3]={glm::vec3(0,0,1),glm::vec3(0,1,0),glm::vec3(1,0,0)};
-                for(int i=0;i<3;i++){
-                    glm::vec4 col=dragAxis==(GizmoAxis)(i+1)?glm::vec4(1,1,.2f,1):cols[i];
-                    glm::mat4 m=glm::translate(glm::mat4(1),gPos);
-                    m=glm::rotate(m,glm::radians(rA[i]),rX[i]);m=glm::scale(m,glm::vec3(gs));
-                    glUniformMatrix4fv(glGetUniformLocation(gizmoShader.ID,"mvp"),1,GL_FALSE,glm::value_ptr(vp*m));
-                    glUniform4f(glGetUniformLocation(gizmoShader.ID,"color"),col.r,col.g,col.b,col.a);
-                    glDrawArrays(GL_TRIANGLES,2,arrowCnt-2);glLineWidth(2.f);glDrawArrays(GL_LINES,0,2);
-                }
-            } else if(gizmoMode==GizmoMode::Rotate){
-                glm::vec4 rc[3]={glm::vec4(1,.15f,.15f,1),glm::vec4(.15f,1,.15f,1),glm::vec4(.15f,.4f,1,1)};
-                for(int i=0;i<3;i++){
-                    glm::vec4 col=dragAxis==(GizmoAxis)(i+1)?glm::vec4(1,1,.2f,1):rc[i];
-                    drawRing(gizmoShader.ID,gPos,i,gs,col,vp);
-                }
-            }
-        }
-    }
-}
-
-bool DragFloat3XYZ(const char* label,float* v,float speed=0.05f){
-    bool changed=false;
-    ImGui::PushID(label);
-    float w=(ImGui::GetContentRegionAvail().x-ImGui::CalcTextSize("X").x*3-ImGui::GetStyle().ItemSpacing.x*5)/3;
-    ImGui::TextDisabled("%s",label);
-    ImGui::SameLine(80);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImVec4(.5f,.1f,.1f,1));
-    ImGui::SetNextItemWidth(w);if(ImGui::DragFloat("##x",&v[0],speed))changed=true;
-    ImGui::PopStyleColor();ImGui::SameLine(0,3);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImVec4(.1f,.4f,.1f,1));
-    ImGui::SetNextItemWidth(w);if(ImGui::DragFloat("##y",&v[1],speed))changed=true;
-    ImGui::PopStyleColor();ImGui::SameLine(0,3);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,ImVec4(.1f,.2f,.5f,1));
-    ImGui::SetNextItemWidth(w);if(ImGui::DragFloat("##z",&v[2],speed))changed=true;
-    ImGui::PopStyleColor();
-    ImGui::PopID();
-    return changed;
-}
-
-
-// ═══════════════════════════════════════════════════════
-//   СОХРАНЕНИЕ / ЗАГРУЗКА СЦЕНЫ (простой JSON без библиотек)
-// ═══════════════════════════════════════════════════════
-// ── Несколько скриптов на объект храним в одной строке через ";" ──
-std::string JoinScripts(const std::vector<std::string>& scripts){
-    std::string out;
-    for(size_t i=0;i<scripts.size();i++){ out+=scripts[i]; if(i+1<scripts.size()) out+=";"; }
-    return out;
-}
-std::vector<std::string> SplitScripts(const std::string& s){
-    std::vector<std::string> out;
-    size_t start=0;
-    while(true){
-        size_t p=s.find(';',start);
-        std::string part = (p==std::string::npos) ? s.substr(start) : s.substr(start,p-start);
-        if(!part.empty()) out.push_back(part);
-        if(p==std::string::npos) break;
-        start=p+1;
-    }
-    return out;
-}
-
-void SaveScene(const std::string& path,
-    const std::vector<SceneObject>& objects,
-    const std::vector<LightObject>& lights,
-    const std::vector<CameraObject>& cameras)
-{
-    std::ofstream f(path);
-    if(!f.is_open()){ return; }
-    f << "{\n";
-    // Objects
-    f << "  \"objects\": [\n";
-    for(int i=0;i<(int)objects.size();i++){
-        auto& o=objects[i];
-        f << "    {";
-        f << "\"name\":\""+o.name+"\",";
-        f << "\"type\":" +std::to_string((int)o.type)+",";
-        f << "\"px\":"+std::to_string(o.pos.x)+",\"py\":"+std::to_string(o.pos.y)+",\"pz\":"+std::to_string(o.pos.z)+",";
-        f << "\"rx\":"+std::to_string(o.rot.x)+",\"ry\":"+std::to_string(o.rot.y)+",\"rz\":"+std::to_string(o.rot.z)+",";
-        f << "\"sx\":"+std::to_string(o.scale.x)+",\"sy\":"+std::to_string(o.scale.y)+",\"sz\":"+std::to_string(o.scale.z)+",";
-        f << "\"cr\":"+std::to_string(o.color.r)+",\"cg\":"+std::to_string(o.color.g)+",\"cb\":"+std::to_string(o.color.b)+",";
-        f << "\"scripts\":\""+JoinScripts(o.scriptPaths)+"\",";
-        f << "\"texture\":\""+o.texturePath+"\"";
-        f << "}";
-        if(i<(int)objects.size()-1) f << ",";
-        f << "\n";
-    }
-    f << "  ],\n";
-    // Lights
-    f << "  \"lights\": [\n";
-    for(int i=0;i<(int)lights.size();i++){
-        auto& l=lights[i];
-        f << "    {";
-        f << "\"name\":\""+l.name+"\",";
-        f << "\"px\":"+std::to_string(l.pos.x)+",\"py\":"+std::to_string(l.pos.y)+",\"pz\":"+std::to_string(l.pos.z)+",";
-        f << "\"cr\":"+std::to_string(l.color.r)+",\"cg\":"+std::to_string(l.color.g)+",\"cb\":"+std::to_string(l.color.b)+",";
-        f << "\"intensity\":"+std::to_string(l.intensity)+",\"range\":"+std::to_string(l.range);
-        f << "}";
-        if(i<(int)lights.size()-1) f << ",";
-        f << "\n";
-    }
-    f << "  ],\n";
-    // Cameras
-    f << "  \"cameras\": [\n";
-    for(int i=0;i<(int)cameras.size();i++){
-        auto& c=cameras[i];
-        f << "    {";
-        f << "\"name\":\""+c.name+"\",";
-        f << "\"px\":"+std::to_string(c.pos.x)+",\"py\":"+std::to_string(c.pos.y)+",\"pz\":"+std::to_string(c.pos.z)+",";
-        f << "\"fov\":"+std::to_string(c.fov)+",\"primary\":"+std::to_string(c.isPrimary?1:0);
-        f << "}";
-        if(i<(int)cameras.size()-1) f << ",";
-        f << "\n";
-    }
-    f << "  ]\n}\n";
-    f.close();
-}
-
-std::string jsonStr(const std::string& s, const std::string& key){
-    // Extract string value for key from simple json line
-    std::string search = "\""+key+"\"\":\"";
-    // Try string value
-    auto p = s.find("\""+key+"\": \"");
-    if(p==std::string::npos) p=s.find("\""+key+"\":\"");
-    if(p==std::string::npos) return "";
-    p=s.find("\"",p+key.size()+3);
-    if(p==std::string::npos) return "";
-    p++;
-    auto e=s.find("\"",p);
-    return e==std::string::npos?"":s.substr(p,e-p);
-}
-float jsonFloat(const std::string& s, const std::string& key){
-    auto p=s.find("\""+key+"\":"); 
-    if(p==std::string::npos) return 0.f;
-    p+=key.size()+3;
-    try{ return std::stof(s.substr(p)); } catch(...){ return 0.f; }
-}
-int jsonInt(const std::string& s, const std::string& key){
-    return (int)jsonFloat(s,key);
-}
-
-void LoadScene(const std::string& path,
-    std::vector<SceneObject>& objects,
-    std::vector<LightObject>& lights,
-    std::vector<CameraObject>& cameras,
-    int& sel, SelectionType& selType)
-{
-    std::ifstream f(path);
-    if(!f.is_open()) return;
-    objects.clear(); lights.clear(); cameras.clear();
-    sel=-1; selType=SelectionType::None;
-    std::string line, section="";
-    while(std::getline(f,line)){
-        if(line.find("\"objects\"")!=std::string::npos) section="obj";
-        else if(line.find("\"lights\"")!=std::string::npos) section="lit";
-        else if(line.find("\"cameras\"")!=std::string::npos) section="cam";
-        else if(line.find("{")!=std::string::npos && line.find("name")!=std::string::npos){
-            if(section=="obj"){
-                SceneObject o;
-                o.name=jsonStr(line,"name");
-                o.type=(PrimitiveType)jsonInt(line,"type");
-                o.pos={jsonFloat(line,"px"),jsonFloat(line,"py"),jsonFloat(line,"pz")};
-                o.rot={jsonFloat(line,"rx"),jsonFloat(line,"ry"),jsonFloat(line,"rz")};
-                o.scale={jsonFloat(line,"sx"),jsonFloat(line,"sy"),jsonFloat(line,"sz")};
-                o.color={jsonFloat(line,"cr"),jsonFloat(line,"cg"),jsonFloat(line,"cb")};
-                std::string scriptsJoined = jsonStr(line,"scripts");
-                if(!scriptsJoined.empty()){
-                    o.scriptPaths = SplitScripts(scriptsJoined);
-                } else {
-                    std::string legacy = jsonStr(line,"script"); // старые сцены, один скрипт
-                    if(!legacy.empty()) o.scriptPaths.push_back(legacy);
-                }
-                o.hasScript=!o.scriptPaths.empty();
-                o.texturePath=jsonStr(line,"texture");
-                if(!o.texturePath.empty()) o.textureID=VE::LoadTexture(o.texturePath);
-                o.ecsID=scene.CreateEntity(o.name);
-                scene.GetTransform(o.ecsID).Position=o.pos;
-                scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
-                objects.push_back(o);
-            } else if(section=="lit"){
-                LightObject l;
-                l.name=jsonStr(line,"name");
-                l.pos={jsonFloat(line,"px"),jsonFloat(line,"py"),jsonFloat(line,"pz")};
-                l.color={jsonFloat(line,"cr"),jsonFloat(line,"cg"),jsonFloat(line,"cb")};
-                l.intensity=jsonFloat(line,"intensity");
-                l.range=jsonFloat(line,"range");
-                l.ecsID=scene.CreateEntity(l.name);
-                scene.registry.AddComponent<VE::LightComponent>(l.ecsID,l.color,l.intensity);
-                lights.push_back(l);
-            } else if(section=="cam"){
-                CameraObject c;
-                c.name=jsonStr(line,"name");
-                c.pos={jsonFloat(line,"px"),jsonFloat(line,"py"),jsonFloat(line,"pz")};
-                c.fov=jsonFloat(line,"fov");
-                c.isPrimary=jsonInt(line,"primary")==1;
-                c.ecsID=scene.CreateEntity(c.name);
-                scene.registry.AddComponent<VE::CameraComponent>(c.ecsID,c.isPrimary);
-                cameras.push_back(c);
-            }
-        }
-    }
-    if(!objects.empty()){sel=0;selType=SelectionType::Object;}
+    logInfo("ViewportFBO resize complete");
 }
 
 int main(int argc, char** argv)
@@ -1178,7 +285,33 @@ int main(int argc, char** argv)
     g_PrevCursorPosCallback = glfwSetCursorPosCallback(native, mouse_callback);
     ImGui_ImplOpenGL3_Init("#version 330");
 
-    // Fonts: using default ImGui font
+    // ── Шрифт: дефолтный шрифт ImGui поддерживает только ASCII (0x20-0xFF),
+    //    из-за чего кириллица и даже длинное тире "—" рисовались как "?".
+    //    Грузим системный Segoe UI (есть на любом Windows) с расширенным
+    //    диапазоном символов: латиница + кириллица + типографские тире/кавычки. ──
+    {
+        ImFontGlyphRangesBuilder builder;
+        builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+        builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+        static const ImWchar extraChars[] = { 0x2010,0x2015, 0x2018,0x201F, 0x2026,0x2026, 0 }; // тире, кавычки-ёлочки, многоточие
+        builder.AddRanges(extraChars);
+        static ImVector<ImWchar> ranges;
+        builder.BuildRanges(&ranges);
+
+        const char* fontCandidates[] = {
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+        };
+        bool fontLoaded = false;
+        for (auto* path : fontCandidates) {
+            if (fs::exists(path)) {
+                io.Fonts->AddFontFromFileTTF(path, 17.0f, nullptr, ranges.Data);
+                fontLoaded = true;
+                break;
+            }
+        }
+        if (!fontLoaded) io.Fonts->AddFontDefault(); // на случай если система совсем без стандартных шрифтов
+    }
 
     VE::Shader shader(vertSrc,fragSrc);
     VE::Shader skinnedShader(vertSkinnedSrc,fragSrc);
@@ -1217,10 +350,122 @@ int main(int argc, char** argv)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,gameRBO);
     glBindFramebuffer(GL_FRAMEBUFFER,0);
 
+    // ── MSAA: рендерим в мультисэмпл-буфер, потом resolve-блитом переносим в уже
+    //    существующие sceneTex/gameTex — их саму текстуру и ImGui::Image трогать не пришлось ──
+    const int MSAA_SAMPLES = 4;
+    unsigned int sceneMSFBO,sceneMSColorRBO,sceneMSDepthRBO;
+    glGenFramebuffers(1,&sceneMSFBO);glBindFramebuffer(GL_FRAMEBUFFER,sceneMSFBO);
+    glGenRenderbuffers(1,&sceneMSColorRBO);glBindRenderbuffer(GL_RENDERBUFFER,sceneMSColorRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_RGBA16F,3840,2160);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,sceneMSColorRBO);
+    glGenRenderbuffers(1,&sceneMSDepthRBO);glBindRenderbuffer(GL_RENDERBUFFER,sceneMSDepthRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_DEPTH24_STENCIL8,3840,2160);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,sceneMSDepthRBO);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+
+    unsigned int gameMSFBO,gameMSColorRBO,gameMSDepthRBO;
+    glGenFramebuffers(1,&gameMSFBO);glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);
+    glGenRenderbuffers(1,&gameMSColorRBO);glBindRenderbuffer(GL_RENDERBUFFER,gameMSColorRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_RGBA16F,3840,2160);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,gameMSColorRBO);
+    glGenRenderbuffers(1,&gameMSDepthRBO);glBindRenderbuffer(GL_RENDERBUFFER,gameMSDepthRBO);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_DEPTH24_STENCIL8,3840,2160);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,gameMSDepthRBO);
+    glBindFramebuffer(GL_FRAMEBUFFER,0);
+    glEnable(GL_MULTISAMPLE);
+
+    // ── Bloom: HDR-резолв (float, без tonemap) + буферы под bright-pass/blur ──
+    auto makeHDRFBO = [](unsigned int& fbo, unsigned int& tex, int w, int h){
+        glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+        glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA16F,w,h,0,GL_RGBA,GL_FLOAT,nullptr);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+    };
+    unsigned int sceneHDRFBO,sceneHDRTex; makeHDRFBO(sceneHDRFBO,sceneHDRTex,3840,2160);
+    unsigned int gameHDRFBO,gameHDRTex;   makeHDRFBO(gameHDRFBO,gameHDRTex,3840,2160);
+    // bright-pass/blur — половинное разрешение, этого достаточно для мягкого свечения и заметно быстрее
+    unsigned int brightFBO,brightTex; makeHDRFBO(brightFBO,brightTex,1920,1080);
+    unsigned int pingpongFBO[2],pingpongTex[2];
+    for(int i=0;i<2;i++) makeHDRFBO(pingpongFBO[i],pingpongTex[i],1920,1080);
+
+    // fullscreen-quad для всех пост-процесс проходов
+    unsigned int quadVAO,quadVBO;
+    {
+        float qv[] = { -1,1,0,1,  -1,-1,0,0,  1,-1,1,0,   -1,1,0,1,  1,-1,1,0,  1,1,1,1 };
+        glGenVertexArrays(1,&quadVAO); glGenBuffers(1,&quadVBO);
+        glBindVertexArray(quadVAO); glBindBuffer(GL_ARRAY_BUFFER,quadVBO);
+        glBufferData(GL_ARRAY_BUFFER,sizeof(qv),qv,GL_STATIC_DRAW);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)0); glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)(2*sizeof(float))); glEnableVertexAttribArray(1);
+        glBindVertexArray(0);
+    }
+
+    VE::Shader bloomBrightShader(postVertSrc,brightPassFragSrc);
+    VE::Shader bloomBlurShader(postVertSrc,blurFragSrc);
+    VE::Shader bloomCompositeShader(postVertSrc,compositeFragSrc);
+
+    float g_BloomThreshold=1.0f, g_BloomStrength=0.6f, g_Exposure=1.0f;
+    bool  g_BloomEnabled=true;
+
+    // Резолвит HDR-сцену (hdrTex) в bright-pass -> размытие -> композит+tonemap,
+    // финальный LDR-результат пишет в outputFBO (это sceneFBO/gameFBO — их сама текстура
+    // для ImGui::Image не меняется, меняется только то, что в неё рисуется).
+    auto ApplyBloomAndTonemap = [&](unsigned int hdrTex, unsigned int outputFBO, int w, int h){
+        int bw=w/4, bh=h/4; if(bw<1)bw=1; if(bh<1)bh=1; // четверть разрешения — заметно дешевле, для bloom этого достаточно
+
+        // Полноэкранные quad-проходы — 2D, без глубины/блендинга. Если оставить
+        // GL_DEPTH_TEST включённым (он включён после 3D-рендера сцены), quad проваливает
+        // тест глубины против неочищенного буфера глубины и просто не рисуется — чёрный экран.
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+
+        // 1) bright-pass в половинном разрешении
+        glBindFramebuffer(GL_FRAMEBUFFER,brightFBO); glViewport(0,0,bw,bh);
+        bloomBrightShader.Use();
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrTex);
+        glUniform1i(glGetUniformLocation(bloomBrightShader.ID,"uScene"),0);
+        glUniform1f(glGetUniformLocation(bloomBrightShader.ID,"uThreshold"),g_BloomThreshold);
+        glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
+
+        // 2) гауссово размытие пинг-понгом (5 проходов туда-обратно = мягкое широкое свечение)
+        bool horizontal=true; unsigned int srcTex=brightTex;
+        bloomBlurShader.Use();
+        glUniform2f(glGetUniformLocation(bloomBlurShader.ID,"uTexelSize"),1.0f/bw,1.0f/bh);
+        for(int i=0;i<4;i++){
+            glBindFramebuffer(GL_FRAMEBUFFER,pingpongFBO[horizontal?0:1]); glViewport(0,0,bw,bh);
+            glUniform1i(glGetUniformLocation(bloomBlurShader.ID,"uHorizontal"),horizontal);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,srcTex);
+            glUniform1i(glGetUniformLocation(bloomBlurShader.ID,"uImage"),0);
+            glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
+            srcTex=pingpongTex[horizontal?0:1];
+            horizontal=!horizontal;
+        }
+
+        // 3) композит: HDR-сцена + размытый bloom -> ACES tonemap -> итоговый LDR в outputFBO
+        glBindFramebuffer(GL_FRAMEBUFFER,outputFBO); glViewport(0,0,w,h);
+        bloomCompositeShader.Use();
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrTex);
+        glUniform1i(glGetUniformLocation(bloomCompositeShader.ID,"uScene"),0);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D,srcTex);
+        glUniform1i(glGetUniformLocation(bloomCompositeShader.ID,"uBloom"),1);
+        glUniform1f(glGetUniformLocation(bloomCompositeShader.ID,"uBloomStrength"),g_BloomEnabled?g_BloomStrength:0.f);
+        glUniform1f(glGetUniformLocation(bloomCompositeShader.ID,"uExposure"),g_Exposure);
+        glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
+        glActiveTexture(GL_TEXTURE0);
+        glEnable(GL_DEPTH_TEST); // возвращаем состояние для следующего 3D-рендера
+    };
+
     std::vector<SceneObject> objects;
     g_LuaObjectsPtr = &objects; // для Animation.* API из Lua
     std::vector<LightObject> lights;
     std::vector<CameraObject> sceneCameras;
+    g_LuaLightsPtr  = &lights;      // для SaveScene из Lua
+    g_LuaCamerasPtr = &sceneCameras; // для Scene.SetCamera из Lua
     int sel=-1,selLight=-1,selCamera=-1;
     SelectionType selType=SelectionType::None;
 
@@ -1280,6 +525,7 @@ int main(int argc, char** argv)
         objects.clear(); lights.clear(); sceneCameras.clear();
         sel=-1; selLight=-1; selCamera=-1; selType=SelectionType::None;
         LoadScene(path,objects,lights,sceneCameras,sel,selType);
+        VE::UndoSystem::Get().Clear(); // новая сцена — старая история отмены больше не валидна
         currentScenePath=path;
         // Пересоздаём ECS сущности
         for(auto& o:objects){
@@ -1291,6 +537,13 @@ int main(int argc, char** argv)
         // Player mode: как только сцена загрузилась — ставим флаг на автозапуск Play
         // (саму StartPlay() вызвать здесь нельзя — она объявляется ниже по коду)
         if (g_PlayerMode) g_PlayerAutoPlayPending = true;
+    });
+
+    // ── SceneManager: регистрируем коллбэк сохранения сцены (для SceneManager.SaveScene / SaveScene из Lua) ──
+    VE::SceneManager::Get().SetSaveCallback([&](const std::string& path){
+        SaveScene(path, objects, lights, sceneCameras);
+        currentScenePath = path;
+        logInfo("Scene saved: "+path);
     });
 
     glEnable(GL_DEPTH_TEST);glEnable(GL_STENCIL_TEST);
@@ -1364,6 +617,123 @@ int main(int argc, char** argv)
                     return 0;
                 });
 
+                // ── Physics.AddRigidbody(mass?, useGravity?) — включить физику для СВОЕГО объекта.
+                //    Если у объекта ещё нет коллайдера — добавляет Box-коллайдер по размеру объекта
+                //    (иначе тело будет падать, но ни с чем не сталкиваться — Physics.Step требует
+                //    Rigidbody+Collider+Transform одновременно, см. Physics.h::SyncToBullet). ──
+                pushSelfFn("AddRigidbody", [](lua_State* L)->int{
+                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
+                    float mass = (float)luaL_optnumber(L,1,1.0);
+                    bool useGravity = lua_isboolean(L,2) ? (lua_toboolean(L,2)!=0) : true;
+
+                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id)){
+                        auto& rb = scene.registry.GetComponent<VE::RigidbodyComponent>(id);
+                        rb.Mass = mass; rb.UseGravity = useGravity;
+                    } else {
+                        auto& rb = scene.registry.AddComponent<VE::RigidbodyComponent>(id);
+                        rb.Mass = mass; rb.UseGravity = useGravity;
+                    }
+
+                    extern std::vector<SceneObject>* g_LuaObjectsPtr;
+                    glm::vec3 half(0.5f,0.5f,0.5f);
+                    if(g_LuaObjectsPtr) for(auto& o : *g_LuaObjectsPtr) if(o.ecsID==id){ half = o.scale*0.5f; o.hasRigidBody=true; break; }
+
+                    if(!scene.registry.HasComponent<VE::ColliderComponent>(id))
+                        scene.registry.AddComponent<VE::ColliderComponent>(id) = VE::ColliderComponent::Box(half);
+
+                    return 0;
+                });
+
+                // ── Physics.AddCollider(shape, a, b, c, isTrigger?) — добавить/заменить форму коллизий.
+                //    shape="box":     a,b,c = half-size по X,Y,Z (по умолчанию 0.5 каждый)
+                //    shape="sphere":  a = radius
+                //    shape="capsule": a = radius, b = height
+                //    isTrigger — необязательный bool, последним аргументом (объекты проходят
+                //    сквозь, но событие столкновения всё равно происходит). ──
+                pushSelfFn("AddCollider", [](lua_State* L)->int{
+                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
+                    std::string shape = luaL_optstring(L,1,"box");
+                    bool isTrigger = lua_isboolean(L,5) ? (lua_toboolean(L,5)!=0) : false;
+
+                    VE::ColliderComponent col;
+                    if(shape=="sphere"){
+                        col = VE::ColliderComponent::Sphere((float)luaL_optnumber(L,2,0.5), isTrigger);
+                    } else if(shape=="capsule"){
+                        col = VE::ColliderComponent::Capsule((float)luaL_optnumber(L,2,0.5), (float)luaL_optnumber(L,3,1.0));
+                        col.IsTrigger = isTrigger;
+                    } else {
+                        glm::vec3 half((float)luaL_optnumber(L,2,0.5),(float)luaL_optnumber(L,3,0.5),(float)luaL_optnumber(L,4,0.5));
+                        col = VE::ColliderComponent::Box(half, isTrigger);
+                    }
+
+                    if(scene.registry.HasComponent<VE::ColliderComponent>(id))
+                        scene.registry.GetComponent<VE::ColliderComponent>(id) = col;
+                    else
+                        scene.registry.AddComponent<VE::ColliderComponent>(id) = col;
+                    return 0;
+                });
+
+                // ── Physics.Raycast(ox,oy,oz, dx,dy,dz, maxDist) — для выстрелов, проверки земли, клика по объекту.
+                //    Возвращает: hit(bool), entity(int|nil), hitX,hitY,hitZ, normalX,normalY,normalZ, distance ──
+                lua_pushstring(LL, "Raycast");
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    glm::vec3 origin((float)luaL_optnumber(L,1,0), (float)luaL_optnumber(L,2,0), (float)luaL_optnumber(L,3,0));
+                    glm::vec3 dir((float)luaL_optnumber(L,4,0), (float)luaL_optnumber(L,5,0), (float)luaL_optnumber(L,6,0));
+                    float maxDist = (float)luaL_optnumber(L,7,1000.0);
+                    auto hit = VE::Physics::Get().Raycast(origin, dir, maxDist);
+                    lua_pushboolean(L, hit.hit);
+                    if (hit.hit) lua_pushinteger(L, (lua_Integer)hit.entity); else lua_pushnil(L);
+                    lua_pushnumber(L, hit.point.x);  lua_pushnumber(L, hit.point.y);  lua_pushnumber(L, hit.point.z);
+                    lua_pushnumber(L, hit.normal.x); lua_pushnumber(L, hit.normal.y); lua_pushnumber(L, hit.normal.z);
+                    lua_pushnumber(L, hit.distance);
+                    return 9;
+                }, 0);
+                lua_settable(LL, -3);
+
+                // ── Physics.RaycastAll(ox,oy,oz, dx,dy,dz, maxDist?) — ВСЕ пересечения вдоль луча
+                //    (не только ближайшее, как Raycast) — для дробовика/луча сквозь стекло и т.п.
+                //    Возвращает Lua-массив таблиц: { {entity=.., x=.., y=.., z=.., nx=.., ny=.., nz=.., distance=..}, ... }
+                //    отсортированный по расстоянию (ближайший первый). ──
+                lua_pushstring(LL, "RaycastAll");
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    glm::vec3 origin((float)luaL_optnumber(L,1,0), (float)luaL_optnumber(L,2,0), (float)luaL_optnumber(L,3,0));
+                    glm::vec3 dir((float)luaL_optnumber(L,4,0), (float)luaL_optnumber(L,5,0), (float)luaL_optnumber(L,6,0));
+                    float maxDist = (float)luaL_optnumber(L,7,1000.0);
+                    auto hits = VE::Physics::Get().RaycastAll(origin, dir, maxDist);
+
+                    lua_newtable(L);
+                    for(size_t i=0;i<hits.size();i++){
+                        lua_newtable(L);
+                        lua_pushinteger(L,(lua_Integer)hits[i].entity); lua_setfield(L,-2,"entity");
+                        lua_pushnumber(L,hits[i].point.x);   lua_setfield(L,-2,"x");
+                        lua_pushnumber(L,hits[i].point.y);   lua_setfield(L,-2,"y");
+                        lua_pushnumber(L,hits[i].point.z);   lua_setfield(L,-2,"z");
+                        lua_pushnumber(L,hits[i].normal.x);  lua_setfield(L,-2,"nx");
+                        lua_pushnumber(L,hits[i].normal.y);  lua_setfield(L,-2,"ny");
+                        lua_pushnumber(L,hits[i].normal.z);  lua_setfield(L,-2,"nz");
+                        lua_pushnumber(L,hits[i].distance);  lua_setfield(L,-2,"distance");
+                        lua_rawseti(L,-2,(int)(i+1)); // Lua-массивы с 1
+                    }
+                    return 1;
+                }, 0);
+                lua_settable(LL, -3);
+
+                // ── Physics.CheckCollision(a, b) — соприкасаются ли Entity a и b прямо сейчас.
+                //    Physics.CheckCollision(otherID) — короткая форма: проверить СВОЙ объект и otherID. ──
+                pushSelfFn("CheckCollision", [](lua_State* L)->int{
+                    VE::EntityID selfId=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
+                    VE::EntityID a, b;
+                    if(lua_gettop(L) >= 2){
+                        a=(VE::EntityID)luaL_optinteger(L,1,0);
+                        b=(VE::EntityID)luaL_optinteger(L,2,0);
+                    } else {
+                        a=selfId;
+                        b=(VE::EntityID)luaL_optinteger(L,1,0);
+                    }
+                    lua_pushboolean(L, VE::Physics::Get().CheckCollision(a,b));
+                    return 1;
+                });
+
                 lua_setglobal(LL, "Physics");
             }
 
@@ -1414,6 +784,156 @@ int main(int argc, char** argv)
                 }, 1);
                 lua_settable(LL, -3);
 
+                // ── Scene.Instantiate(templateName, x,y,z) -> newName | nil ──
+                // Клонирует уже существующий объект (используй его как "префаб": разместил в сцене
+                // один раз, дальше спавнишь копии по имени). Копирует меш/материалы/физику/скейл.
+                // Свои Lua-скрипты клон НЕ запускает — им управляет скрипт, который его заспавнил
+                // (так проще для пуль/врагов: один "менеджер" двигает и удаляет их по имени).
+                lua_pushstring(LL, "Instantiate");
+                lua_pushlightuserdata(LL, (void*)&objects);
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
+                    const char* tname=luaL_checkstring(L,1);
+                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
+                    SceneObject* tmpl=nullptr;
+                    for(auto& o:*objs) if(o.name==tname){ tmpl=&o; break; }
+                    if(!tmpl){ lua_pushnil(L); return 1; }
+                    static int s_InstCounter=0;
+                    SceneObject clone = *tmpl;
+                    clone.name = tmpl->name + "_Clone" + std::to_string(++s_InstCounter);
+                    clone.pos = glm::vec3(x,y,z);
+                    clone.luaInstances.clear();
+                    clone.ecsID = scene.CreateEntity(clone.name);
+                    scene.GetTransform(clone.ecsID).Position = clone.pos;
+                    scene.GetTransform(clone.ecsID).Scale = clone.scale;
+                    scene.registry.AddComponent<VE::MeshComponent>(clone.ecsID, VE::Mesh{}, clone.color);
+                    if (tmpl->hasRigidBody) {
+                        VE::RigidbodyComponent rb; rb.Mass=tmpl->mass; rb.UseGravity=tmpl->useGravity;
+                        scene.registry.AddComponent<VE::RigidbodyComponent>(clone.ecsID, rb);
+                        if (scene.registry.HasComponent<VE::ColliderComponent>(tmpl->ecsID))
+                            scene.registry.AddComponent<VE::ColliderComponent>(clone.ecsID, scene.registry.GetComponent<VE::ColliderComponent>(tmpl->ecsID));
+                        // Само тело Bullet создастся автоматически на следующем Physics::Step()
+                        // (SyncToBullet сам находит все Entity с Rigidbody+Collider+Transform).
+                    }
+                    objs->push_back(clone);
+                    lua_pushstring(L, clone.name.c_str());
+                    return 1;
+                }, 1);
+                lua_settable(LL, -3);
+
+                // ── Scene.InstantiatePrefab(path, x,y,z) -> newName | nil ──
+                // Как Instantiate(), но грузит объект из .veprefab файла на диске —
+                // работает даже если такого объекта нет в текущей сцене (в отличие
+                // от Instantiate, который клонирует объект, уже стоящий в сцене).
+                lua_pushstring(LL, "InstantiatePrefab");
+                lua_pushlightuserdata(LL, (void*)&objects);
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
+                    const char* path=luaL_checkstring(L,1);
+                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
+
+                    SceneObject o;
+                    PrefabColliderInfo colInfo;
+                    if (!LoadPrefab(path, o, colInfo)) { lua_pushnil(L); return 1; }
+
+                    static int s_PrefabInstCounter=0;
+                    o.name = o.name + "_Inst" + std::to_string(++s_PrefabInstCounter);
+                    o.pos = glm::vec3(x,y,z);
+                    o.ecsID = scene.CreateEntity(o.name);
+                    scene.GetTransform(o.ecsID).Position = o.pos;
+                    scene.GetTransform(o.ecsID).Scale = o.scale;
+                    scene.registry.AddComponent<VE::MeshComponent>(o.ecsID, VE::Mesh{}, o.color);
+                    if (o.hasRigidBody) {
+                        auto& rb = scene.registry.AddComponent<VE::RigidbodyComponent>(o.ecsID);
+                        rb.Mass = o.mass; rb.UseGravity = o.useGravity;
+                    }
+                    if (colInfo.hasCollider) {
+                        VE::ColliderComponent col;
+                        col.Shape = (VE::ColliderComponent::ShapeType)colInfo.shape;
+                        col.HalfSize = {colInfo.hx, colInfo.hy, colInfo.hz};
+                        col.Radius = colInfo.radius; col.Height = colInfo.height;
+                        col.IsTrigger = colInfo.isTrigger;
+                        scene.registry.AddComponent<VE::ColliderComponent>(o.ecsID) = col;
+                    }
+                    objs->push_back(o);
+                    lua_pushstring(L, o.name.c_str());
+                    return 1;
+                }, 1);
+                lua_settable(LL, -3);
+
+                // ── Scene.InstantiatePrimitive("Sphere", x,y,z, scale) -> newName ──
+                // Быстрый спавн без заранее подготовленного шаблона (напр. пуля-заглушка сферой).
+                lua_pushstring(LL, "InstantiatePrimitive");
+                lua_pushlightuserdata(LL, (void*)&objects);
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
+                    std::string tn = luaL_checkstring(L,1);
+                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
+                    float sc=(float)luaL_optnumber(L,5,1.0);
+                    PrimitiveType t = PrimitiveType::Cube;
+                    if (tn=="Sphere") t=PrimitiveType::Sphere;
+                    else if (tn=="Cylinder") t=PrimitiveType::Cylinder;
+                    else if (tn=="Pyramid") t=PrimitiveType::Pyramid;
+                    else if (tn=="Capsule") t=PrimitiveType::Capsule;
+                    else if (tn=="Plane") t=PrimitiveType::Plane;
+                    static int s_PrimCounter=0;
+                    SceneObject o;
+                    o.name = tn + "_Spawned" + std::to_string(++s_PrimCounter);
+                    o.pos = glm::vec3(x,y,z);
+                    o.scale = glm::vec3(sc,sc,sc);
+                    o.type = t;
+                    o.color = glm::vec3(0.7f,0.7f,0.75f);
+                    o.ecsID = scene.CreateEntity(o.name);
+                    scene.GetTransform(o.ecsID).Position = o.pos;
+                    scene.GetTransform(o.ecsID).Scale = o.scale;
+                    scene.registry.AddComponent<VE::MeshComponent>(o.ecsID, VE::Mesh{}, o.color);
+                    objs->push_back(o);
+                    lua_pushstring(L, o.name.c_str());
+                    return 1;
+                }, 1);
+                lua_settable(LL, -3);
+
+                // ── Scene.Destroy(name) -> bool ──
+                // Удаляет объект из сцены прямо во время игры (пуля улетела/попала, враг умер и т.п.)
+                lua_pushstring(LL, "Destroy");
+                lua_pushlightuserdata(LL, (void*)&objects);
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
+                    const char* name=luaL_checkstring(L,1);
+                    for(size_t i=0;i<objs->size();i++){
+                        if((*objs)[i].name==name){
+                            VE::EntityID id=(*objs)[i].ecsID;
+                            VE::Physics::Get().RemoveBody(id);
+                            if (scene.registry.IsAlive(id)) scene.registry.DestroyEntity(id);
+                            objs->erase(objs->begin()+i);
+                            lua_pushboolean(L,1);
+                            return 1;
+                        }
+                    }
+                    lua_pushboolean(L,0);
+                    return 1;
+                }, 1);
+                lua_settable(LL, -3);
+
+                // ── Scene.SetCamera(name) -> bool ──
+                // Делает камеру с этим именем активной (isPrimary=true), остальные сцены-камеры
+                // становятся неактивными — тот же флаг, что и переключение камеры в редакторе.
+                lua_pushstring(LL, "SetCamera");
+                lua_pushlightuserdata(LL, (void*)&sceneCameras);
+                lua_pushcclosure(LL, [](lua_State* L)->int{
+                    auto* cams=(std::vector<CameraObject>*)lua_touserdata(L, lua_upvalueindex(1));
+                    const char* name=luaL_checkstring(L,1);
+                    bool found=false;
+                    for(auto& c:*cams){
+                        bool match=(c.name==name);
+                        c.isPrimary=match;
+                        if(match) found=true;
+                    }
+                    lua_pushboolean(L, found);
+                    return 1;
+                }, 1);
+                lua_settable(LL, -3);
+
                 lua_setglobal(LL, "Scene");
             }
 
@@ -1425,24 +945,24 @@ int main(int argc, char** argv)
                 lua_newtable(LL);
 
                 lua_pushstring(LL, "SetTimeOfDay");
-                lua_pushcfunction(LL, [](lua_State* L)->int{
+                lua_pushcclosure(LL, [](lua_State* L)->int{
                     extern float g_TimeOfDay;
                     float h=(float)luaL_optnumber(L,1,12.0);
                     while(h<0.f)h+=24.f; g_TimeOfDay=fmodf(h,24.f);
                     return 0;
-                });
+                }, 0);
                 lua_settable(LL, -3);
 
                 lua_pushstring(LL, "GetTimeOfDay");
-                lua_pushcfunction(LL, [](lua_State* L)->int{
+                lua_pushcclosure(LL, [](lua_State* L)->int{
                     extern float g_TimeOfDay;
                     lua_pushnumber(L,g_TimeOfDay);
                     return 1;
-                });
+                }, 0);
                 lua_settable(LL, -3);
 
                 lua_pushstring(LL, "SetFog");
-                lua_pushcfunction(LL, [](lua_State* L)->int{
+                lua_pushcclosure(LL, [](lua_State* L)->int{
                     extern float g_FogDensity;
                     extern glm::vec3 g_FogColor;
                     g_FogDensity = (float)luaL_optnumber(L,1,g_FogDensity);
@@ -1450,7 +970,7 @@ int main(int argc, char** argv)
                     g_FogColor.y = (float)luaL_optnumber(L,3,g_FogColor.y);
                     g_FogColor.z = (float)luaL_optnumber(L,4,g_FogColor.z);
                     return 0;
-                });
+                }, 0);
                 lua_settable(LL, -3);
 
                 lua_setglobal(LL, "Environment");
@@ -1520,6 +1040,50 @@ int main(int argc, char** argv)
                     return 1;
                 });
 
+                // PlayAnimation / StopAnimation — то же самое, что Play/Stop выше (алиасы под
+                // именами, которые обычно ожидают в остальных движках/уроках).
+                pushSelfFn("PlayAnimation", [](lua_State* L)->int{
+                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
+                    extern std::vector<SceneObject>* g_LuaObjectsPtr;
+                    if(!g_LuaObjectsPtr) return 0;
+                    for(auto& o : *g_LuaObjectsPtr){
+                        if(o.ecsID!=id || !o.model) continue;
+                        if(lua_isnumber(L,1)){
+                            int idx=(int)lua_tointeger(L,1);
+                            if(idx>=0 && idx<(int)o.model->animations.size()){ o.animIndex=idx; o.animTime=0.f; o.animPlaying=true; }
+                        } else {
+                            const char* name = luaL_checkstring(L,1);
+                            for(int a=0;a<(int)o.model->animations.size();a++){
+                                if(o.model->animations[a].name==name){ o.animIndex=a; o.animTime=0.f; o.animPlaying=true; break; }
+                            }
+                        }
+                        break;
+                    }
+                    return 0;
+                });
+                pushSelfFn("StopAnimation", [](lua_State* L)->int{
+                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
+                    extern std::vector<SceneObject>* g_LuaObjectsPtr;
+                    if(!g_LuaObjectsPtr) return 0;
+                    for(auto& o : *g_LuaObjectsPtr){
+                        if(o.ecsID==id){ o.animPlaying=false; o.animTime=0.f; break; }
+                    }
+                    return 0;
+                });
+
+                // Animation.SetAnimationSpeed(speed) — множитель скорости проигрывания
+                // (1.0 = обычная скорость, 2.0 = вдвое быстрее, 0.5 = замедленно, отрицательное — назад).
+                pushSelfFn("SetAnimationSpeed", [](lua_State* L)->int{
+                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
+                    float speed=(float)luaL_optnumber(L,1,1.0);
+                    extern std::vector<SceneObject>* g_LuaObjectsPtr;
+                    if(!g_LuaObjectsPtr) return 0;
+                    for(auto& o : *g_LuaObjectsPtr){
+                        if(o.ecsID==id){ o.animSpeed=speed; break; }
+                    }
+                    return 0;
+                });
+
                 lua_setglobal(LL, "Animation");
             }
 
@@ -1529,6 +1093,7 @@ int main(int argc, char** argv)
                 if(luaInst->loadScript(ss.str())){
                     luaInst->objX=obj.pos.x;luaInst->objY=obj.pos.y;luaInst->objZ=obj.pos.z;
                     luaInst->objR=obj.color.r;luaInst->objG=obj.color.g;luaInst->objB=obj.color.b;
+                    luaInst->objName=obj.name;
                     luaInst->pushObjectData();
                     luaInst->callOnStart();
                     luaInst->pullObjectData();
@@ -1550,7 +1115,7 @@ int main(int argc, char** argv)
         logInfo("Player mode: launching "+g_PlayerScenePath);
     }
 
-    const char* typeNames[]={"Cube","Sphere","Cylinder","Pyramid","Capsule","Plane","Model"};
+    const char* typeNames[]={"Cube","Sphere","Cylinder","Pyramid","Capsule","Plane","Model","Empty"};
     static float hierW=240.f, inspW=280.f, bottomH=190.f;
     const float sideW=48.f, toolH=38.f;
 
@@ -1560,7 +1125,7 @@ int main(int argc, char** argv)
         // ── Продвигаем время скелетной анимации (играет и в редакторе, для превью) ──
         for(auto& obj:objects){
             if(obj.animPlaying && obj.model && obj.model->hasSkeleton && obj.animIndex>=0)
-                obj.animTime += deltaTime;
+                obj.animTime += deltaTime * obj.animSpeed;
         }
         // ── Кастомная покадровая анимация — двигает/крутит/масштабирует ЛЮБОЙ объект ──
         for(auto& obj:objects){
@@ -1594,7 +1159,6 @@ int main(int argc, char** argv)
         float menuH=20.f;
         float viewH=io.DisplaySize.y-menuH-bottomH-toolH;
         float vpW=io.DisplaySize.x-sideW-hierW-inspW;
-        float vpAspect=g_VpSize.x>1?g_VpSize.x/g_VpSize.y:vpW/viewH;
 
         if(!sceneCameras.empty()){
             for(auto& sc:sceneCameras){if(sc.isPrimary){
@@ -1625,6 +1189,13 @@ int main(int argc, char** argv)
                 if(glfwGetKey(native,GLFW_KEY_W)==GLFW_PRESS) gizmoMode=GizmoMode::Move;
                 if(glfwGetKey(native,GLFW_KEY_E)==GLFW_PRESS) gizmoMode=GizmoMode::Rotate;
                 if(glfwGetKey(native,GLFW_KEY_R)==GLFW_PRESS) gizmoMode=GizmoMode::Scale;
+                static bool ctrlZWasDown=false, ctrlYWasDown=false;
+                bool ctrlDown=glfwGetKey(native,GLFW_KEY_LEFT_CONTROL)==GLFW_PRESS;
+                bool zDown=glfwGetKey(native,GLFW_KEY_Z)==GLFW_PRESS;
+                bool yDown=glfwGetKey(native,GLFW_KEY_Y)==GLFW_PRESS;
+                if(ctrlDown&&zDown&&!ctrlZWasDown) VE::UndoSystem::Get().Undo();
+                if(ctrlDown&&yDown&&!ctrlYWasDown) VE::UndoSystem::Get().Redo();
+                ctrlZWasDown=ctrlDown&&zDown; ctrlYWasDown=ctrlDown&&yDown;
             }
             if(glfwGetKey(native,GLFW_KEY_DELETE)==GLFW_PRESS&&selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){
                 if(scene.IsAlive(objects[sel].ecsID))scene.DestroyEntity(objects[sel].ecsID);
@@ -1652,8 +1223,28 @@ int main(int argc, char** argv)
         float gs=dist*0.16f;
 
         glm::mat4 view=camera.GetViewMatrix();
+        // Пересчитываем aspect ratio из текущего размера viewport
+        float vpAspect = (g_VpSize.x > 1 && g_VpSize.y > 1) ? (g_VpSize.x / g_VpSize.y) : (vpW/viewH);
         glm::mat4 proj=camera.GetProjectionMatrix(vpAspect);
 
+        // ── Рисование маски кистью — приоритет над обычным выделением/гизмо, пока активен режим ──
+        if (g_EditorMode==EditorMode::PaintMask && leftDown && selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
+            double lx=mouseX-g_VpPos.x, ly=mouseY-g_VpPos.y;
+            int vw=(int)g_VpSize.x, vh=(int)g_VpSize.y;
+            if (lx>=0&&ly>=0&&lx<vw&&ly<vh) {
+                Ray ray=screenToRay(lx,ly,vw,vh,view,proj);
+                glm::vec2 uv;
+                if (RaycastObjectUV(ray, objects[sel], uv)) {
+                    auto& obj = objects[sel];
+                    if (!obj.materials.empty() && obj.materials[0].maskPixelSize>0) {
+                        bool restoreLayer2 = g_BrushPaintMode != ImGui::GetIO().KeyShift; // тулбар задаёт режим, Shift временно инвертирует
+                        StampBrush(obj.materials[0], uv, g_BrushRadius, restoreLayer2);
+                    }
+                }
+            }
+        }
+
+        if (g_EditorMode==EditorMode::Object) {
         if(leftClickThisFrame&&!rightMouseDown){
             double lx=clickX-g_VpPos.x,ly=clickY-g_VpPos.y;
             int vw=(int)g_VpSize.x,vh=(int)g_VpSize.y;
@@ -1671,6 +1262,7 @@ int main(int argc, char** argv)
                     if(hitAxis!=GizmoAxis::None){
                         hitGizmo=true;dragAxis=hitAxis;dragStartPos=selPos;
                         if(selType==SelectionType::Object&&sel>=0){dragStartRot=objects[sel].rot;dragStartScale=objects[sel].scale;}
+                        g_UndoDragObjIndex=sel; g_UndoDragSelType=selType; // Undo/Redo: запоминаем что тащим
                         glm::vec3 axDir=axes[(int)hitAxis-1];
                         glm::vec3 plN=glm::normalize(glm::cross(axDir,glm::cross(camera.Front,axDir)));
                         float t=rayPlaneT(ray,plN,selPos);dragStartHit=t>0?ray.origin+ray.dir*t:selPos;
@@ -1728,10 +1320,35 @@ int main(int argc, char** argv)
                 }
             }
         }
+        // ── Undo/Redo: драг гизмо только что закончился — записываем "было/стало" ──
+        if (g_PrevDragAxis != GizmoAxis::None && dragAxis == GizmoAxis::None &&
+            g_UndoDragSelType == SelectionType::Object &&
+            g_UndoDragObjIndex >= 0 && g_UndoDragObjIndex < (int)objects.size())
+        {
+            int idx = g_UndoDragObjIndex;
+            glm::vec3 before, after;
+            std::function<void(const glm::vec3&)> setter;
+            if (gizmoMode == GizmoMode::Move) {
+                before = dragStartPos; after = objects[idx].pos;
+                setter = [idx](const glm::vec3& v){ if(g_LuaObjectsPtr && idx < (int)g_LuaObjectsPtr->size()) (*g_LuaObjectsPtr)[idx].pos = v; };
+            } else if (gizmoMode == GizmoMode::Rotate) {
+                before = dragStartRot; after = objects[idx].rot;
+                setter = [idx](const glm::vec3& v){ if(g_LuaObjectsPtr && idx < (int)g_LuaObjectsPtr->size()) (*g_LuaObjectsPtr)[idx].rot = v; };
+            } else {
+                before = dragStartScale; after = objects[idx].scale;
+                setter = [idx](const glm::vec3& v){ if(g_LuaObjectsPtr && idx < (int)g_LuaObjectsPtr->size()) (*g_LuaObjectsPtr)[idx].scale = v; };
+            }
+            if (before != after)
+                VE::UndoSystem::Get().Push(std::make_unique<VE::PropertyChangeCommand<glm::vec3>>(setter, before, after, objects[idx].name));
+        }
+        g_PrevDragAxis = dragAxis;
+        
+        } // if (g_EditorMode==EditorMode::Object)
         leftClickThisFrame=false;
 
         if(isPlaying&&!isPaused){
             VE::Physics::Get().Step(scene.registry,deltaTime);
+            VE::ParticleSystem::Get().Update(deltaTime); // частицы двигаются только пока игра играет
             for(auto& obj:objects){
                 if(obj.hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(obj.ecsID)){
                     auto& tr=scene.GetTransform(obj.ecsID);
@@ -1795,8 +1412,30 @@ int main(int argc, char** argv)
             }
         }
 
-        glBindFramebuffer(GL_FRAMEBUFFER,sceneFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
+        glDisable(GL_SCISSOR_TEST); // ImGui мог оставить scissor включённым с маленьким прямоугольником прошлого кадра
+
+        // ════════════════════════════════════════════════════════════════
+        // Проверяем, изменился ли размер Viewport, и пересоздаём FBO если нужно
+        // ════════════════════════════════════════════════════════════════
+        int vpWidth = (int)g_VpSize.x;
+        int vpHeight = (int)g_VpSize.y;
+        if (vpWidth > 0 && vpHeight > 0 && (vpWidth != g_VpLastWidth || vpHeight != g_VpLastHeight)) {
+            ResizeViewportFBO(vpWidth, vpHeight,
+                            sceneMSFBO, sceneMSColorRBO, sceneMSDepthRBO,
+                            gameMSFBO, gameMSColorRBO, gameMSDepthRBO,
+                            sceneHDRFBO, sceneHDRTex,
+                            gameHDRFBO, gameHDRTex,
+                            sceneFBO, sceneTex, sceneRBO,
+                            gameFBO, gameTex, gameRBO);
+            g_VpLastWidth = vpWidth;
+            g_VpLastHeight = vpHeight;
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER,sceneMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
         renderScene(objects,sel,false,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,camera,vpAspect,gizmoMode,dragAxis,showSkybox,showGrid,showGizmos,gs,lights,sceneCameras,selLight,selCamera,selType);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER,sceneMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,sceneHDRFBO);
+        glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        ApplyBloomAndTonemap(sceneHDRTex, sceneFBO, (int)g_VpSize.x, (int)g_VpSize.y);
         // ── Своё же тело не должно быть видно от первого лица (как в Unity/Godot) ──
         int fpExcludeIdx=-1;
         for(auto& sc:sceneCameras){
@@ -1804,8 +1443,11 @@ int main(int argc, char** argv)
                 fpExcludeIdx=sc.followTargetIndex; break;
             }
         }
-        glBindFramebuffer(GL_FRAMEBUFFER,gameFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
+        glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
         renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,vpAspect,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExcludeIdx);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO);
+        glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        ApplyBloomAndTonemap(gameHDRTex, gameFBO, (int)g_VpSize.x, (int)g_VpSize.y);
         glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,(int)io.DisplaySize.x,(int)io.DisplaySize.y); // restore full
         glClearColor(0.08f,0.08f,0.09f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
@@ -1954,6 +1596,7 @@ if (ImGui::BeginMainMenuBar()) {
             std::string sp=projectRoot+"\\Assets\\Scenes\\scene.vescene";
             if(fs::exists(sp)){
                 LoadScene(sp,objects,lights,sceneCameras,sel,selType);
+                VE::UndoSystem::Get().Clear(); // новая сцена — старая история отмены больше не валидна
                 currentScenePath=sp;
                 logInfo("Scene loaded: "+sp);
             } else logWarn("No scene file found: "+sp);
@@ -1984,6 +1627,9 @@ if (ImGui::BeginMainMenuBar()) {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
+    if (ImGui::MenuItem("Undo", "Ctrl+Z", false, VE::UndoSystem::Get().CanUndo())) VE::UndoSystem::Get().Undo();
+    if (ImGui::MenuItem("Redo", "Ctrl+Y", false, VE::UndoSystem::Get().CanRedo())) VE::UndoSystem::Get().Redo();
+    ImGui::Separator();
         if (ImGui::MenuItem("Duplicate","Ctrl+D") && selType==SelectionType::Object && sel>=0) {
             SceneObject copy=objects[sel]; copy.name+="_copy"; copy.pos+=glm::vec3(1,0,0);
             copy.ecsID=scene.CreateEntity(copy.name); scene.GetTransform(copy.ecsID).Position=copy.pos;
@@ -2000,7 +1646,7 @@ if (ImGui::BeginMainMenuBar()) {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("GameObject")) {
-        if (ImGui::MenuItem("Create Empty")) addObject(objects, PrimitiveType::Cube, sel, selType);
+        if (ImGui::MenuItem("Create Empty")) addObject(objects, PrimitiveType::Empty, sel, selType);
         if (ImGui::BeginMenu("3D Object")) {
             if (ImGui::MenuItem("Cube"))     addObject(objects,PrimitiveType::Cube,    sel,selType);
             if (ImGui::MenuItem("Sphere"))   addObject(objects,PrimitiveType::Sphere,  sel,selType);
@@ -2049,6 +1695,8 @@ if (ImGui::BeginMainMenuBar()) {
             isPlaying=false; isPaused=false;
             if(g_MouseCaptured){ g_MouseCaptured=false; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL); }
             VE::Physics::Get().ClearAllBodies();
+            VE::ParticleSystem::Get().Clear();
+            VE::DebugDraw::Get().Clear();
             for(int i=0;i<(int)objects.size()&&i<(int)savedTransforms.size();i++){
                 objects[i].pos=savedTransforms[i].pos; objects[i].rot=savedTransforms[i].rot; objects[i].scale=savedTransforms[i].scale;
                 if(objects[i].hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(objects[i].ecsID)){
@@ -2167,7 +1815,7 @@ if (g_ShowPreferences) {
         ImGui::EndDisabled();
         ImGui::Spacing();
         char pathBuf[256];
-        strncpy(pathBuf, g_Prefs.defaultProjectPath.c_str(), sizeof(pathBuf)-1);
+        strncpy_s(pathBuf, g_Prefs.defaultProjectPath.c_str(), sizeof(pathBuf)-1);
         pathBuf[sizeof(pathBuf)-1]='\0';
         if (ImGui::InputText("Default project path", pathBuf, sizeof(pathBuf)))
             g_Prefs.defaultProjectPath = pathBuf;
@@ -2268,6 +1916,37 @@ if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Grid");
 ImGui::SameLine(0,2);
 if (ToggleBtn("Gizmos", showGizmos, ImVec2(58,24))) showGizmos=!showGizmos;
 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Gizmos");
+ImGui::SameLine();
+if (ToggleBtn("Bloom", g_BloomEnabled, ImVec2(58,24))) g_BloomEnabled=!g_BloomEnabled;
+if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bloom + ACES tonemapping");
+
+ImGui::SameLine(0,16);
+ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.176f,0.188f,0.212f,1.f));
+ImGui::Text("|");
+ImGui::PopStyleColor();
+ImGui::SameLine(0,16);
+
+// ── Переключатель режима редактора (Object / Paint Mask) — как Mode в Blender ──
+if (ToggleBtn("Object", g_EditorMode==EditorMode::Object, ImVec2(56,24))) g_EditorMode=EditorMode::Object;
+if (ImGui::IsItemHovered()) ImGui::SetTooltip("Object Mode — normal select/move/rotate");
+ImGui::SameLine(0,2);
+bool canPaint = selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()
+    && !objects[sel].materials.empty() && objects[sel].materials[0].maskPixelSize>0;
+if (!canPaint) ImGui::BeginDisabled();
+if (ToggleBtn("Paint", g_EditorMode==EditorMode::PaintMask, ImVec2(50,24))) g_EditorMode=EditorMode::PaintMask;
+if (!canPaint) ImGui::EndDisabled();
+if (ImGui::IsItemHovered()) ImGui::SetTooltip(canPaint ? "Paint Mask Mode — LMB erases Layer2, Shift+LMB restores it" : "Create a Paintable Mask on the object's material first (Inspector tab)");
+if (g_EditorMode==EditorMode::PaintMask) {
+    ImGui::SameLine(0,10);
+    if (ToggleBtn("Erase", !g_BrushPaintMode, ImVec2(50,24))) g_BrushPaintMode=false;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("LMB erases Layer 2 (shows base texture through)");
+    ImGui::SameLine(0,2);
+    if (ToggleBtn("Fill##brushmode", g_BrushPaintMode, ImVec2(50,24))) g_BrushPaintMode=true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("LMB restores Layer 2 (hides base texture again)");
+    ImGui::SameLine(0,10);
+    ImGui::SetNextItemWidth(100);
+    ImGui::SliderFloat("Brush", &g_BrushRadius, 0.02f, 0.4f, "%.2f");
+}
 
 ImGui::End();
 ImGui::PopStyleColor();
@@ -2375,6 +2054,7 @@ if (ImGui::BeginPopup("##addobj")) {
     ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
     ImGui::Text("  3D Objects"); ImGui::PopStyleColor();
     ImGui::Separator();
+    if (ImGui::MenuItem("  Empty"))    addObject(objects,PrimitiveType::Empty,   sel,selType);
     if (ImGui::MenuItem("  Cube"))     addObject(objects,PrimitiveType::Cube,    sel,selType);
     if (ImGui::MenuItem("  Sphere"))   addObject(objects,PrimitiveType::Sphere,  sel,selType);
     if (ImGui::MenuItem("  Cylinder")) addObject(objects,PrimitiveType::Cylinder,sel,selType);
@@ -2435,7 +2115,7 @@ if (sceneOpen) {
         std::string filter(hierSearch);
         if (!filter.empty() && obj.name.find(filter)==std::string::npos) continue;
 
-        const char* icons[] = {"[#]","[o]","[|]","[^]","[*]","[-]","[M]"};
+        const char* icons[] = {"[#]","[o]","[|]","[^]","[*]","[-]","[M]","[+]"};
         bool hasChildren = false;
         for (int j=0;j<(int)objects.size();j++) if(objects[j].parentIndex==i){hasChildren=true;break;}
 
@@ -2496,7 +2176,7 @@ if (sceneOpen) {
             }
             if (ImGui::MenuItem("  Rename")) {
                 s_HierRenameTarget = i;
-                strncpy(s_HierRenameBuf, objects[i].name.c_str(), sizeof(s_HierRenameBuf)-1);
+                strncpy_s(s_HierRenameBuf, objects[i].name.c_str(), sizeof(s_HierRenameBuf)-1);
                 ImGui::OpenPopup("##hier_rename");
             }
             ImGui::Separator();
@@ -2584,10 +2264,9 @@ if (ImGui::BeginTabBar("##vptabs")) {
     if (ImGui::BeginTabItem("  Scene")) {
         float tw=ImGui::GetContentRegionAvail().x, th=ImGui::GetContentRegionAvail().y;
         g_VpPos=ImGui::GetCursorScreenPos(); g_VpSize=ImVec2(tw,th);
-        // UV matches viewport/FBO ratio
-        float u2 = g_VpSize.x > 0 ? g_VpSize.x/3840.f : 1.f;
-        float v1 = g_VpSize.y > 0 ? g_VpSize.y/2160.f : 1.f;
-        ImGui::Image((ImTextureID)(intptr_t)sceneTex, ImVec2(tw,th), ImVec2(0,v1), ImVec2(u2,0));
+        // Теперь FBO динамически масштабируется под размер ImGui окна,
+        // поэтому UV всегда (0,1)-(1,0) для полного отображения текстуры
+        ImGui::Image((ImTextureID)(intptr_t)sceneTex, ImVec2(tw,th), ImVec2(0,1), ImVec2(1,0));
 
         // ── Drop target: raycast-based material drop (like Godot/Unity) ──
         if (ImGui::BeginDragDropTarget()) {
@@ -2737,6 +2416,14 @@ if (ImGui::BeginTabBar("##vptabs")) {
                     logInfo("Duplicated: "+o.name);
                 }
             }
+            static char s_PrefabNameBuf[128] = {};
+            if (ImGui::MenuItem("  Save as Prefab...", nullptr, false, hasSel)) {
+                if (hasSel) {
+                    strncpy_s(s_PrefabNameBuf, objects[sel].name.c_str(), sizeof(s_PrefabNameBuf)-1);
+                    s_PrefabNameBuf[sizeof(s_PrefabNameBuf)-1]='\0';
+                    ImGui::OpenPopup("##save_prefab");
+                }
+            }
             if (ImGui::MenuItem("  Delete", "Del", false, hasSel)) {
                 if (hasSel) {
                     if(scene.IsAlive(objects[sel].ecsID)) scene.DestroyEntity(objects[sel].ecsID);
@@ -2745,6 +2432,39 @@ if (ImGui::BeginTabBar("##vptabs")) {
                     sel=(int)objects.size()-1;
                     if(objects.empty()){sel=-1;selType=SelectionType::None;}
                 }
+            }
+
+            // ── "Save as Prefab" popup ──
+            if (ImGui::BeginPopupModal("##save_prefab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Prefab name:");
+                ImGui::SetNextItemWidth(300);
+                ImGui::InputText("##prefab_name_input", s_PrefabNameBuf, sizeof(s_PrefabNameBuf));
+                ImGui::Spacing();
+                if (ImGui::Button("Save", ImVec2(120,0))) {
+                    if (s_PrefabNameBuf[0] && sel>=0 && sel<(int)objects.size()) {
+                        try {
+                            fs::path prefabDir = fs::path(projectRoot) / "Assets" / "Prefabs";
+                            fs::create_directories(prefabDir);
+                            fs::path outPath = prefabDir / (std::string(s_PrefabNameBuf) + ".veprefab");
+
+                            PrefabColliderInfo colInfo;
+                            auto& srcObj = objects[sel];
+                            if (scene.registry.HasComponent<VE::ColliderComponent>(srcObj.ecsID)) {
+                                auto& c = scene.registry.GetComponent<VE::ColliderComponent>(srcObj.ecsID);
+                                colInfo.hasCollider = true;
+                                colInfo.shape = (int)c.Shape;
+                                colInfo.hx=c.HalfSize.x; colInfo.hy=c.HalfSize.y; colInfo.hz=c.HalfSize.z;
+                                colInfo.radius=c.Radius; colInfo.height=c.Height;
+                                colInfo.isTrigger=c.IsTrigger;
+                            }
+                            SavePrefab(outPath.string(), srcObj, colInfo);
+                        } catch(const std::exception& ex){ logError(ex.what()); }
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
             }
 
             ImGui::Separator();
@@ -2770,9 +2490,8 @@ if (ImGui::BeginTabBar("##vptabs")) {
         float tw=ImGui::GetContentRegionAvail().x, th=ImGui::GetContentRegionAvail().y;
         if (isPlaying) {
             ImVec2 gamePos = ImGui::GetCursorScreenPos();
-            float u2g = g_VpSize.x > 0 ? g_VpSize.x/3840.f : 1.f;
-            float v1g = g_VpSize.y > 0 ? g_VpSize.y/2160.f : 1.f;
-            ImGui::Image((ImTextureID)(intptr_t)gameTex, ImVec2(tw,th), ImVec2(0,v1g), ImVec2(u2g,0));
+            // FBO теперь динамически масштабируется под размер ImGui окна
+            ImGui::Image((ImTextureID)(intptr_t)gameTex, ImVec2(tw,th), ImVec2(0,1), ImVec2(1,0));
             // ── Захват курсора: клик по Game — прячем и зацикливаем мышь для FPS-камеры ──
             if (ImGui::IsItemClicked() && !g_MouseCaptured) {
                 g_MouseCaptured = true;
@@ -2983,7 +2702,7 @@ if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
 
         ImGui::Text("Name:"); ImGui::SameLine(80);
         static char s_MatNameBuf[64];
-        strncpy(s_MatNameBuf, mat.name.c_str(), sizeof(s_MatNameBuf)-1);
+        strncpy_s(s_MatNameBuf, mat.name.c_str(), sizeof(s_MatNameBuf)-1);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputText("##matname", s_MatNameBuf, sizeof(s_MatNameBuf)))
             mat.name = s_MatNameBuf;
@@ -2995,13 +2714,76 @@ if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
         }
 
         ImGui::Text("Texture:"); ImGui::SameLine(80);
-        if (mat.texturePath.empty())
-            ImGui::TextColored(COL_DIM, "None (double-click an image in Project panel)");
-        else
-            ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.texturePath).filename().string().c_str());
+        if (mat.texturePath.empty()) ImGui::TextColored(COL_DIM, "(none)");
+        else ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.texturePath).filename().string().c_str());
+        if (ImGui::Button(g_MatPickTarget==1 ? "Waiting for click..." : "Set Texture...", ImVec2(150,0)))
+            g_MatPickTarget = (g_MatPickTarget==1) ? 0 : 1;
+        if (!mat.texturePath.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##tex")) { mat.texturePath.clear(); mat.textureID = 0; }
+        }
 
-        if (!mat.texturePath.empty() && ImGui::Button("Clear Texture", ImVec2(-1,0))) {
-            mat.texturePath.clear(); mat.textureID = 0;
+        ImGui::Spacing();
+        ImGui::TextColored(COL_DIM, "Layer 2 (e.g. concrete over bricks):");
+        ImGui::Text("Layer 2:"); ImGui::SameLine(80);
+        if (mat.layer2TexturePath.empty()) ImGui::TextColored(COL_DIM, "(none)");
+        else ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.layer2TexturePath).filename().string().c_str());
+        if (ImGui::Button(g_MatPickTarget==2 ? "Waiting for click..." : "Set Layer 2...", ImVec2(150,0)))
+            g_MatPickTarget = (g_MatPickTarget==2) ? 0 : 2;
+        if (!mat.layer2TexturePath.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##l2")) { mat.layer2TexturePath.clear(); mat.layer2TextureID = 0; }
+            ImGui::Text("L2 Tiling X:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##l2tilex", &mat.layer2TilingX, 0.05f, 0.1f, 20.f, "%.2f");
+            ImGui::Text("L2 Tiling Y:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
+            ImGui::DragFloat("##l2tiley", &mat.layer2TilingY, 0.05f, 0.1f, 20.f, "%.2f");
+        }
+
+        ImGui::Spacing();
+        ImGui::Text("Mask:"); ImGui::SameLine(80);
+        if (mat.maskTexturePath.empty()) ImGui::TextColored(COL_DIM, "(none)");
+        else ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.maskTexturePath).filename().string().c_str());
+        if (ImGui::Button(g_MatPickTarget==3 ? "Waiting for click..." : "Set Mask...", ImVec2(150,0)))
+            g_MatPickTarget = (g_MatPickTarget==3) ? 0 : 3;
+        if (!mat.maskTexturePath.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##mask")) { mat.maskTexturePath.clear(); mat.maskTextureID = 0; }
+        }
+
+        if (g_MatPickTarget != 0) {
+            const char* tgtName = g_MatPickTarget==1?"Texture":g_MatPickTarget==2?"Layer 2":"Mask";
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.55f,0.85f,0.95f,1.f), "Double-click an image in the Project panel below to assign it as %s.", tgtName);
+            if (ImGui::Button("Cancel", ImVec2(-1,0))) g_MatPickTarget = 0;
+        }
+
+        if (!mat.layer2TexturePath.empty() && mat.maskTexturePath.empty() && mat.maskPixelSize==0)
+            ImGui::TextColored(ImVec4(1.f,0.75f,0.3f,1.f), "Layer 2 is set but has no mask yet — set a Mask above, or create a paintable one below.");
+
+        // ── Кисть: создать рисуемую маску и переключиться в Paint Mode ──
+        if (!mat.layer2TexturePath.empty()) {
+            ImGui::Spacing();
+            if (mat.maskPixelSize==0) {
+                if (ImGui::Button("Create Paintable Mask", ImVec2(-1,0))) {
+                    CreateBlankMask(mat, 256);
+                    UploadMaskTexture(mat);
+                    mat.maskTexturePath.clear();
+                    g_EditorMode = EditorMode::PaintMask;
+                }
+            } else {
+                ImGui::TextColored(COL_GREEN, "Paintable mask: %dx%d", mat.maskPixelSize, mat.maskPixelSize);
+                if (ImGui::Button(g_EditorMode==EditorMode::PaintMask ? "Stop Painting" : "Start Painting", ImVec2(-1,0)))
+                    g_EditorMode = (g_EditorMode==EditorMode::PaintMask) ? EditorMode::Object : EditorMode::PaintMask;
+                if (g_EditorMode==EditorMode::PaintMask)
+                    ImGui::TextColored(COL_DIM, "LMB on object — erase Layer2, Shift+LMB — restore it");
+                if (ImGui::Button("Save Mask to File...", ImVec2(-1,0))) {
+                    std::string outPath = projectRoot + "\\Assets\\Textures\\" +
+                        (mat.name.empty()?std::string("mask"):mat.name) + "_mask.pgm";
+                    SaveMaskPGM(outPath, mat.maskPixels, mat.maskPixelSize);
+                    mat.maskTexturePath = outPath;
+                    logInfo("Mask saved: "+outPath);
+                }
+            }
         }
 
         ImGui::Spacing();
@@ -3200,7 +2982,7 @@ else if (selType==SelectionType::None && !assetSelected.empty() &&
 
     ImGui::Text("Name:"); ImGui::SameLine(90);
     static char s_AssetMatName[64];
-    strncpy(s_AssetMatName, s_EditMat.name.c_str(), sizeof(s_AssetMatName)-1);
+    strncpy_s(s_AssetMatName, s_EditMat.name.c_str(), sizeof(s_AssetMatName)-1);
     ImGui::SetNextItemWidth(-1);
     if (ImGui::InputText("##assetmatname", s_AssetMatName, sizeof(s_AssetMatName)))
         s_EditMat.name = s_AssetMatName;
@@ -3725,7 +3507,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                     bool isSel = (assetSelected == e.path().string());
 
                     // Determine icon type
-                    enum class IconType { Folder, Image, Script, Mesh3D, Scene, Audio, Save, MaterialIcon, Generic };
+                    enum class IconType { Folder, Image, Script, Mesh3D, Scene, Audio, Save, MaterialIcon, Prefab, Generic };
                     IconType iconType;
                     if      (isDir)                                                             iconType = IconType::Folder;
                     else if (ext==".png"||ext==".jpg"||ext==".jpeg"||ext==".bmp"||ext==".tga") iconType = IconType::Image;
@@ -3735,6 +3517,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                     else if (ext==".wav"||ext==".mp3"||ext==".ogg"||ext==".flac")             iconType = IconType::Audio;
                     else if (ext==".vesave")                                                    iconType = IconType::Save;
                     else if (ext==".mat")                                                       iconType = IconType::MaterialIcon;
+                    else if (ext==".veprefab")                                                   iconType = IconType::Prefab;
                     else                                                                        iconType = IconType::Generic;
 
                     ImGui::PushID(name.c_str());
@@ -3810,6 +3593,18 @@ if (ImGui::BeginTabBar("##btabs")) {
                         dl->AddLine(ImVec2(cx,cy-S*.3f), ImVec2(cx,cy+S*.3f), IM_COL32(60,140,240,150), 1.f);
                         // Ellipse (meridian) approximate
                         dl->AddEllipse(ImVec2(cx,cy), ImVec2(S*.32f, S*.16f), IM_COL32(60,140,240,120), 0.f, 32, 1.f);
+                    }
+                    else if (iconType == IconType::Prefab) {
+                        // Тил-звезда (как значок префаба в Unity) — сразу отличается от обычной модели
+                        float R = S*.30f;
+                        ImVec2 star[10];
+                        for (int i=0;i<10;i++) {
+                            float ang = -3.14159265f/2.f + i*3.14159265f/5.f;
+                            float rr = (i%2==0) ? R : R*0.45f;
+                            star[i] = ImVec2(cx + cosf(ang)*rr, cy + sinf(ang)*rr);
+                        }
+                        dl->AddConvexPolyFilled(star, 10, IM_COL32(40,150,140,255));
+                        dl->AddPolyline(star, 10, IM_COL32(90,230,210,230), ImDrawFlags_Closed, 1.5f);
                     }
                     else if (iconType == IconType::Audio) {
                         // Speaker body
@@ -3910,9 +3705,19 @@ if (ImGui::BeginTabBar("##btabs")) {
                                     auto& tobj = objects[sel];
                                     if (tobj.materials.empty()) { Material m; m.name="Default"; m.color=tobj.color; tobj.materials.push_back(m); tobj.activeMaterial=0; }
                                     auto& tmat = tobj.materials[tobj.activeMaterial];
-                                    tmat.texturePath = e.path().string(); tmat.textureID = tid;
-                                    if (tobj.activeMaterial==0) { tobj.texturePath=tmat.texturePath; tobj.textureID=tid; }
-                                    logInfo("Texture -> "+tobj.name+" ["+tmat.name+"]");
+                                    int target = (g_MatPickTarget!=0) ? g_MatPickTarget : 1; // без явного выбора — по умолчанию база
+                                    if (target==2) {
+                                        tmat.layer2TexturePath = e.path().string(); tmat.layer2TextureID = tid;
+                                        logInfo("Layer 2 -> "+tobj.name+" ["+tmat.name+"]");
+                                    } else if (target==3) {
+                                        tmat.maskTexturePath = e.path().string(); tmat.maskTextureID = tid;
+                                        logInfo("Mask -> "+tobj.name+" ["+tmat.name+"]");
+                                    } else {
+                                        tmat.texturePath = e.path().string(); tmat.textureID = tid;
+                                        if (tobj.activeMaterial==0) { tobj.texturePath=tmat.texturePath; tobj.textureID=tid; }
+                                        logInfo("Texture -> "+tobj.name+" ["+tmat.name+"]");
+                                    }
+                                    g_MatPickTarget = 0; // режим выбора сбрасывается сразу после назначения
                                 }
                             } else logInfo("Select object first");
                         } else if (ext==".obj"||ext==".fbx"||ext==".gltf"||ext==".glb") {
@@ -3923,6 +3728,31 @@ if (ImGui::BeginTabBar("##btabs")) {
                             scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
                             objects.push_back(o); sel=(int)objects.size()-1; selType=SelectionType::Object;
                             logInfo("Model: "+o.name);
+                        } else if (ext==".veprefab") {
+                            SceneObject o;
+                            PrefabColliderInfo colInfo;
+                            if (LoadPrefab(e.path().string(), o, colInfo)) {
+                                static int s_PrefabDropCounter=0;
+                                o.name = o.name + "_" + std::to_string(++s_PrefabDropCounter);
+                                o.ecsID = scene.CreateEntity(o.name);
+                                scene.GetTransform(o.ecsID).Position = o.pos;
+                                scene.GetTransform(o.ecsID).Scale = o.scale;
+                                scene.registry.AddComponent<VE::MeshComponent>(o.ecsID, VE::Mesh{}, o.color);
+                                if (o.hasRigidBody) {
+                                    auto& rb = scene.registry.AddComponent<VE::RigidbodyComponent>(o.ecsID);
+                                    rb.Mass = o.mass; rb.UseGravity = o.useGravity;
+                                }
+                                if (colInfo.hasCollider) {
+                                    VE::ColliderComponent col;
+                                    col.Shape = (VE::ColliderComponent::ShapeType)colInfo.shape;
+                                    col.HalfSize = {colInfo.hx, colInfo.hy, colInfo.hz};
+                                    col.Radius = colInfo.radius; col.Height = colInfo.height;
+                                    col.IsTrigger = colInfo.isTrigger;
+                                    scene.registry.AddComponent<VE::ColliderComponent>(o.ecsID) = col;
+                                }
+                                objects.push_back(o); sel=(int)objects.size()-1; selType=SelectionType::Object;
+                                logInfo("Prefab: "+o.name);
+                            }
                         }
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", name.c_str());
@@ -4236,5 +4066,14 @@ window->OnUpdate();
     VE::AudioEngine::Get().Shutdown();
     shader.Delete();outlineShader.Delete();gridShader.Delete();gizmoShader.Delete();skyboxShader.Delete();
     glDeleteFramebuffers(1,&sceneFBO);glDeleteFramebuffers(1,&gameFBO);
+    glDeleteFramebuffers(1,&sceneMSFBO);glDeleteFramebuffers(1,&gameMSFBO);
+    glDeleteFramebuffers(1,&sceneHDRFBO);glDeleteFramebuffers(1,&gameHDRFBO);
+    glDeleteTextures(1,&sceneHDRTex);glDeleteTextures(1,&gameHDRTex);
+    glDeleteFramebuffers(1,&brightFBO);glDeleteTextures(1,&brightTex);
+    glDeleteFramebuffers(2,pingpongFBO);glDeleteTextures(2,pingpongTex);
+    glDeleteVertexArrays(1,&quadVAO);glDeleteBuffers(1,&quadVBO);
+    bloomBrightShader.Delete();bloomBlurShader.Delete();bloomCompositeShader.Delete();
+    glDeleteRenderbuffers(1,&sceneMSColorRBO);glDeleteRenderbuffers(1,&sceneMSDepthRBO);
+    glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO);
     delete window;return 0;
 }
