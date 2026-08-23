@@ -1,13 +1,17 @@
-#pragma once
+﻿#pragma once
 #include "SceneObject.h"
-// ── Сохранение/загрузка сцены в JSON (вынесено из main.cpp) ──
+#include "UI2D.h"
+#include "Sprites2D.h"
+extern std::vector<UIElement> uiElements;
+extern std::vector<Sprite2D> sprites2D;
+// в”Ђв”Ђ РЎРѕС…СЂР°РЅРµРЅРёРµ/Р·Р°РіСЂСѓР·РєР° СЃС†РµРЅС‹ РІ JSON (РІС‹РЅРµСЃРµРЅРѕ РёР· main.cpp) в”Ђв”Ђ
 
 
 
-// ═══════════════════════════════════════════════════════
-//   СОХРАНЕНИЕ / ЗАГРУЗКА СЦЕНЫ (простой JSON без библиотек)
-// ═══════════════════════════════════════════════════════
-// ── Несколько скриптов на объект храним в одной строке через ";" ──
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+//   РЎРћРҐР РђРќР•РќРР• / Р—РђР“Р РЈР—РљРђ РЎР¦Р•РќР« (РїСЂРѕСЃС‚РѕР№ JSON Р±РµР· Р±РёР±Р»РёРѕС‚РµРє)
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// в”Ђв”Ђ РќРµСЃРєРѕР»СЊРєРѕ СЃРєСЂРёРїС‚РѕРІ РЅР° РѕР±СЉРµРєС‚ С…СЂР°РЅРёРј РІ РѕРґРЅРѕР№ СЃС‚СЂРѕРєРµ С‡РµСЂРµР· ";" в”Ђв”Ђ
 std::string JoinScripts(const std::vector<std::string>& scripts){
     std::string out;
     for(size_t i=0;i<scripts.size();i++){ out+=scripts[i]; if(i+1<scripts.size()) out+=";"; }
@@ -80,6 +84,39 @@ void SaveScene(const std::string& path,
         if(i<(int)cameras.size()-1) f << ",";
         f << "\n";
     }
+    f << "  ],\n";
+    f << "  ],\n  \"ui\": [\n";
+    for(int i=0;i<(int)uiElements.size();i++){
+        auto& u=uiElements[i];
+        f << "    {\"name\":\""<<u.name<<"\",";
+        f << "\"type\":"<<(int)u.type<<",";
+        f << "\"anchorX\":"<<u.anchor.x<<",\"anchorY\":"<<u.anchor.y<<",";
+        f << "\"sizeX\":"<<u.size.x<<",\"sizeY\":"<<u.size.y<<",";
+        f << "\"sizeScaleX\":"<<u.sizeScale.x<<",\"sizeScaleY\":"<<u.sizeScale.y<<",";
+        f << "\"offsetX\":"<<u.posOffset.x<<",\"offsetY\":"<<u.posOffset.y<<",";
+        f << "\"pivotX\":"<<u.anchorPoint.x<<",\"pivotY\":"<<u.anchorPoint.y<<",";
+        f << "\"cr\":"<<u.color.r<<",\"cg\":"<<u.color.g<<",\"cb\":"<<u.color.b<<",\"ca\":"<<u.color.a<<",";
+        f << "\"text\":\""<<u.text<<"\",";
+        f << "\"fontSize\":"<<u.fontSize<<",";
+        f << "\"z\":"<<u.z<<",\"parent\":"<<u.parentIndex<<",";
+        f << "\"rounding\":"<<u.cornerRadius<<",";
+        f << "\"transparency\":"<<u.transparency<<",";
+        f << "\"visible\":"<<(u.visible?1:0)<<",\"fx\":"<<(u.fx?1:0)<<",";
+        f << "\"texPath\":\""<<u.texPath<<"\"}";
+        if(i<(int)uiElements.size()-1) f << ",";
+        f << "\n";
+    }
+    f << "  ],\n  \"sprites\": [\n";
+    for(int i=0;i<(int)sprites2D.size();i++){
+        auto& s=sprites2D[i];
+        f << "    {\"name\":\""<<s.name<<"\",";
+        f << "\"px\":"<<s.pos.x<<",\"py\":"<<s.pos.y<<",";
+        f << "\"sx\":"<<s.scale.x<<",\"sy\":"<<s.scale.y<<",";
+        f << "\"z\":"<<s.z<<",";
+        f << "\"texPath\":\""<<s.texPath<<"\"}";
+        if(i<(int)sprites2D.size()-1) f << ",";
+        f << "\n";
+    }
     f << "  ]\n}\n";
     f.close();
 }
@@ -106,6 +143,12 @@ float jsonFloat(const std::string& s, const std::string& key){
 int jsonInt(const std::string& s, const std::string& key){
     return (int)jsonFloat(s,key);
 }
+int jsonIntDef(const std::string& s, const std::string& key, int def){
+    auto p=s.find("\""+key+"\":");
+    if(p==std::string::npos) return def;
+    p+=key.size()+3;
+    try{ return (int)std::stof(s.substr(p)); } catch(...){ return def; }
+}
 
 void LoadScene(const std::string& path,
     std::vector<SceneObject>& objects,
@@ -116,12 +159,15 @@ void LoadScene(const std::string& path,
     std::ifstream f(path);
     if(!f.is_open()) return;
     objects.clear(); lights.clear(); cameras.clear();
+    uiElements.clear(); sprites2D.clear();
     sel=-1; selType=SelectionType::None;
     std::string line, section="";
     while(std::getline(f,line)){
         if(line.find("\"objects\"")!=std::string::npos) section="obj";
         else if(line.find("\"lights\"")!=std::string::npos) section="lit";
         else if(line.find("\"cameras\"")!=std::string::npos) section="cam";
+        else if(line.find("\"ui\"")!=std::string::npos) section="ui";
+        else if(line.find("\"sprites\"")!=std::string::npos) section="spr";
         else if(line.find("{")!=std::string::npos && line.find("name")!=std::string::npos){
             if(section=="obj"){
                 SceneObject o;
@@ -135,7 +181,7 @@ void LoadScene(const std::string& path,
                 if(!scriptsJoined.empty()){
                     o.scriptPaths = SplitScripts(scriptsJoined);
                 } else {
-                    std::string legacy = jsonStr(line,"script"); // старые сцены, один скрипт
+                    std::string legacy = jsonStr(line,"script"); // СЃС‚Р°СЂС‹Рµ СЃС†РµРЅС‹, РѕРґРёРЅ СЃРєСЂРёРїС‚
                     if(!legacy.empty()) o.scriptPaths.push_back(legacy);
                 }
                 o.hasScript=!o.scriptPaths.empty();
@@ -170,6 +216,36 @@ void LoadScene(const std::string& path,
                 c.ecsID=scene.CreateEntity(c.name);
                 scene.registry.AddComponent<VE::CameraComponent>(c.ecsID,c.isPrimary);
                 cameras.push_back(c);
+            } else if(section=="ui"){
+                UIElement u;
+                u.name=jsonStr(line,"name");
+                u.type=(UIElement::Type)jsonIntDef(line,"type",0);
+                u.anchor={jsonFloat(line,"anchorX"),jsonFloat(line,"anchorY")};
+                u.size={jsonFloat(line,"sizeX"),jsonFloat(line,"sizeY")};
+                u.sizeScale={jsonFloat(line,"sizeScaleX"),jsonFloat(line,"sizeScaleY")};
+                u.posOffset={jsonFloat(line,"offsetX"),jsonFloat(line,"offsetY")};
+                u.anchorPoint={jsonFloat(line,"pivotX"),jsonFloat(line,"pivotY")};
+                u.color={jsonFloat(line,"cr"),jsonFloat(line,"cg"),jsonFloat(line,"cb"),jsonFloat(line,"ca")};
+                u.text=jsonStr(line,"text");
+                u.fontSize=jsonFloat(line,"fontSize");
+                u.z=jsonInt(line,"z");
+                u.parentIndex=jsonIntDef(line,"parent",-1);
+                u.cornerRadius=jsonFloat(line,"rounding");
+                u.transparency=jsonFloat(line,"transparency");
+                u.visible=jsonIntDef(line,"visible",1)==1;
+                u.fx=jsonIntDef(line,"fx",0)==1;
+                u.texPath=jsonStr(line,"texPath");
+                if(!u.texPath.empty()) u.tex=VE::LoadTextureRaw(u.texPath);
+                uiElements.push_back(u);
+            } else if(section=="spr"){
+                Sprite2D s;
+                s.name=jsonStr(line,"name");
+                s.pos={jsonFloat(line,"px"),jsonFloat(line,"py")};
+                s.scale={jsonFloat(line,"sx"),jsonFloat(line,"sy")};
+                s.z=jsonInt(line,"z");
+                s.texPath=jsonStr(line,"texPath");
+                if(!s.texPath.empty()) s.tex=VE::LoadTextureRaw(s.texPath);
+                sprites2D.push_back(s);
             }
         }
     }

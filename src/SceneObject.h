@@ -1,32 +1,33 @@
-#pragma once
+﻿#pragma once
 #include "Material.h"
-// ── SceneObject, Ray, гизмо-хиттесты (вынесено из main.cpp) ──
+// в”Ђв”Ђ SceneObject, Ray, РіРёР·РјРѕ-С…РёС‚С‚РµСЃС‚С‹ (РІС‹РЅРµСЃРµРЅРѕ РёР· main.cpp) в”Ђв”Ђ
 
 struct SceneObject {
     std::string name;
     glm::vec3 pos={0,0,0},rot={0,0,0},scale={1,1,1},color={0.8f,0.6f,0.3f};
     PrimitiveType type=PrimitiveType::Cube;
     std::string modelPath;
-    std::vector<std::string> scriptPaths;  // несколько скриптов на объект (как компоненты в Unity/Godot)
+    std::vector<std::string> scriptPaths;  // РЅРµСЃРєРѕР»СЊРєРѕ СЃРєСЂРёРїС‚РѕРІ РЅР° РѕР±СЉРµРєС‚ (РєР°Рє РєРѕРјРїРѕРЅРµРЅС‚С‹ РІ Unity/Godot)
     std::shared_ptr<VE::Model> model;
     bool active=true; VE::EntityID ecsID=VE::NULL_ENTITY;
     bool hasScript=false, hasRigidBody=false;
+    bool hasCollider=false;
     float mass=1.f; bool useGravity=true;
     int parentIndex=-1;
     glm::vec3 localOffset={0,0,0};
-    std::string texturePath;     // оставлено для обратной совместимости со старыми сценами
+    std::string texturePath;     // РѕСЃС‚Р°РІР»РµРЅРѕ РґР»СЏ РѕР±СЂР°С‚РЅРѕР№ СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚Рё СЃРѕ СЃС‚Р°СЂС‹РјРё СЃС†РµРЅР°РјРё
     GLuint textureID=0;
-    std::vector<Material> materials;  // список материалов (слот 0 = основной)
-    int activeMaterial = 0;            // какой материал сейчас выбран в инспекторе
-    std::vector<std::shared_ptr<VE::LuaEngine>> luaInstances; // Lua-движки для Play-режима (по одному на скрипт)
-    float lookPitch=0.f; // взгляд камеры вверх/вниз (FPS) — НЕ вращает саму модель объекта
-    // ── Скелетная анимация (если у model есть кости/клипы) ──
-    int   animIndex   = -1;    // индекс текущего клипа в obj.model->animations, -1 = не играет
-    float animTime    = 0.f;   // секунды с начала клипа
+    std::vector<Material> materials;  // СЃРїРёСЃРѕРє РјР°С‚РµСЂРёР°Р»РѕРІ (СЃР»РѕС‚ 0 = РѕСЃРЅРѕРІРЅРѕР№)
+    int activeMaterial = 0;            // РєР°РєРѕР№ РјР°С‚РµСЂРёР°Р» СЃРµР№С‡Р°СЃ РІС‹Р±СЂР°РЅ РІ РёРЅСЃРїРµРєС‚РѕСЂРµ
+    std::vector<std::shared_ptr<VE::LuaEngine>> luaInstances; // Lua-РґРІРёР¶РєРё РґР»СЏ Play-СЂРµР¶РёРјР° (РїРѕ РѕРґРЅРѕРјСѓ РЅР° СЃРєСЂРёРїС‚)
+    float lookPitch=0.f; // РІР·РіР»СЏРґ РєР°РјРµСЂС‹ РІРІРµСЂС…/РІРЅРёР· (FPS) вЂ” РќР• РІСЂР°С‰Р°РµС‚ СЃР°РјСѓ РјРѕРґРµР»СЊ РѕР±СЉРµРєС‚Р°
+    // в”Ђв”Ђ РЎРєРµР»РµС‚РЅР°СЏ Р°РЅРёРјР°С†РёСЏ (РµСЃР»Рё Сѓ model РµСЃС‚СЊ РєРѕСЃС‚Рё/РєР»РёРїС‹) в”Ђв”Ђ
+    int   animIndex   = -1;    // РёРЅРґРµРєСЃ С‚РµРєСѓС‰РµРіРѕ РєР»РёРїР° РІ obj.model->animations, -1 = РЅРµ РёРіСЂР°РµС‚
+    float animTime    = 0.f;   // СЃРµРєСѓРЅРґС‹ СЃ РЅР°С‡Р°Р»Р° РєР»РёРїР°
     bool  animPlaying = false;
     bool  animLoop    = true;
-    float animSpeed   = 1.f;   // множитель скорости — Animation.SetAnimationSpeed из Lua
-    // ── Кастомная покадровая анимация (работает для ЛЮБОГО объекта) ──
+    float animSpeed   = 1.f;   // РјРЅРѕР¶РёС‚РµР»СЊ СЃРєРѕСЂРѕСЃС‚Рё вЂ” Animation.SetAnimationSpeed РёР· Lua
+    // в”Ђв”Ђ РљР°СЃС‚РѕРјРЅР°СЏ РїРѕРєР°РґСЂРѕРІР°СЏ Р°РЅРёРјР°С†РёСЏ (СЂР°Р±РѕС‚Р°РµС‚ РґР»СЏ Р›Р®Р‘РћР“Рћ РѕР±СЉРµРєС‚Р°) в”Ђв”Ђ
     std::vector<ObjectAnimClip> customClips;
     int   customClipIndex   = -1;
     float customAnimTime    = 0.f;
@@ -41,7 +42,7 @@ void logInfo (const std::string& m){ consoleLog.push_back({m,0}); }
 void logWarn (const std::string& m){ consoleLog.push_back({m,1}); }
 void logError(const std::string& m){ consoleLog.push_back({m,2}); }
 
-// ── Консольные команды ──
+// в”Ђв”Ђ РљРѕРЅСЃРѕР»СЊРЅС‹Рµ РєРѕРјР°РЅРґС‹ в”Ђв”Ђ
 static char g_CmdBuf[512] = {};
 static std::vector<std::string> g_CmdHistory;
 static int  g_CmdHistoryIdx    = -1;
@@ -49,7 +50,7 @@ static bool g_ConsoleFocusInput = false;
 
 struct Ray { glm::vec3 origin,dir; };
 
-// ── Реализация RaycastObjectUV (Ray и SceneObject тут уже полностью определены) ──
+// в”Ђв”Ђ Р РµР°Р»РёР·Р°С†РёСЏ RaycastObjectUV (Ray Рё SceneObject С‚СѓС‚ СѓР¶Рµ РїРѕР»РЅРѕСЃС‚СЊСЋ РѕРїСЂРµРґРµР»РµРЅС‹) в”Ђв”Ђ
 inline bool RaycastObjectUV(const Ray& worldRay, const SceneObject& obj, glm::vec2& outUV) {
     if (obj.type != PrimitiveType::Cube && obj.type != PrimitiveType::Plane) return false;
     glm::mat4 model=glm::mat4(1);

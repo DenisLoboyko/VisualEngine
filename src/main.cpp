@@ -1,4 +1,4 @@
-#define IMGUI_DEFINE_MATH_OPERATORS
+﻿#define IMGUI_DEFINE_MATH_OPERATORS
 #define MINIAUDIO_IMPLEMENTATION
 #include "Core/AudioEngine.h"
 #include "Core/SceneManager.h"
@@ -19,6 +19,10 @@
 #include "Physics/PhysicsMaterial.h"
 #include "Physics/RigidbodyComponent.h"
 #include "Physics/ColliderComponent.h"
+#include "ECS/CharacterControllerComponent.h"
+static bool g_FpsLock=false;
+static bool g_WantGameTab=false;
+static bool g_HasCtrl=false;
 #include "Physics/Physics.h"
 
 #include <glad/glad.h>
@@ -46,7 +50,7 @@
 namespace fs = std::filesystem;
 
 
-// ── Модули движка (вынесены из main.cpp для читаемости) ──
+// в”Ђв”Ђ РњРѕРґСѓР»Рё РґРІРёР¶РєР° (РІС‹РЅРµСЃРµРЅС‹ РёР· main.cpp РґР»СЏ С‡РёС‚Р°РµРјРѕСЃС‚Рё) в”Ђв”Ђ
 #include "Shaders.h"
 #include "SceneTypes.h"
 #include "Material.h"
@@ -55,13 +59,33 @@ namespace fs = std::filesystem;
 #include "EditorGlobals.h"
 #include "InputCallbacks.h"
 #include "SceneRenderer.h"
+#include "Sprites2D.h"
+#include "UI2D.h"
+#include "UILua.h"
+std::vector<UIElement> uiElements;
+int selUI = -1;
+std::vector<Sprite2D> sprites2D;
+int selSprite2D = -1;
+static void UI_TexPick(int idx, const std::string& p){
+    if (idx<0 || idx>=(int)uiElements.size()) return;
+    GLuint t = VE::LoadTextureRaw(p);
+    if (t) { uiElements[idx].tex=t;
+        uiElements[idx].texPath=p;
+        logInfo("Texture -> "+uiElements[idx].name); }
+}
 #include "SceneIO.h"
 #include "PrefabIO.h"
+#include "EditorIcons.h"
+#include "ShadowMap.h"
+VE::ShadowMap* g_ShadowMap = nullptr;
+VE::Shader* g_DepthShader = nullptr;
+VE::Shader* g_DepthSkinnedShader = nullptr;
+glm::mat4 g_ShadowLightSpace(1.0f);
 
-// ════════════════════════════════════════════════════════════════
-// Функция для динамического ресайза Viewport FBO
-// Вызывается когда размер ImGui Viewport изменился
-// ════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// Р¤СѓРЅРєС†РёСЏ РґР»СЏ РґРёРЅР°РјРёС‡РµСЃРєРѕРіРѕ СЂРµСЃР°Р№Р·Р° Viewport FBO
+// Р’С‹Р·С‹РІР°РµС‚СЃСЏ РєРѕРіРґР° СЂР°Р·РјРµСЂ ImGui Viewport РёР·РјРµРЅРёР»СЃСЏ
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 void ResizeViewportFBO(int newWidth, int newHeight, 
                        unsigned int& sceneMSFBO, unsigned int& sceneMSColorRBO, unsigned int& sceneMSDepthRBO,
                        unsigned int& gameMSFBO, unsigned int& gameMSColorRBO, unsigned int& gameMSDepthRBO,
@@ -70,15 +94,14 @@ void ResizeViewportFBO(int newWidth, int newHeight,
                        unsigned int& sceneFBO, unsigned int& sceneTex, unsigned int& sceneRBO,
                        unsigned int& gameFBO, unsigned int& gameTex, unsigned int& gameRBO)
 {
-    // Минимальный размер - 100x100
+    // РњРёРЅРёРјР°Р»СЊРЅС‹Р№ СЂР°Р·РјРµСЂ - 100x100
     if (newWidth < 100) newWidth = 100;
     if (newHeight < 100) newHeight = 100;
 
-    logInfo("ResizeViewportFBO: " + std::to_string(newWidth) + "x" + std::to_string(newHeight));
 
     const int MSAA_SAMPLES = 4;
 
-    // ══ Удаляем старые MSAA FBO ══
+    // ---------------------------------------------------------в•ђ РЈРґР°Р»СЏРµРј СЃС‚Р°СЂС‹Рµ MSAA FBO в•ђв•ђ
     glDeleteFramebuffers(1, &sceneMSFBO);
     glDeleteRenderbuffers(1, &sceneMSColorRBO);
     glDeleteRenderbuffers(1, &sceneMSDepthRBO);
@@ -86,7 +109,7 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glDeleteRenderbuffers(1, &gameMSColorRBO);
     glDeleteRenderbuffers(1, &gameMSDepthRBO);
 
-    // ══ Удаляем старые Resolve FBO ══
+    // ---------------------------------------------------------в•ђ РЈРґР°Р»СЏРµРј СЃС‚Р°СЂС‹Рµ Resolve FBO в•ђв•ђ
     glDeleteFramebuffers(1, &sceneFBO);
     glDeleteTextures(1, &sceneTex);
     glDeleteRenderbuffers(1, &sceneRBO);
@@ -94,15 +117,15 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glDeleteTextures(1, &gameTex);
     glDeleteRenderbuffers(1, &gameRBO);
 
-    // ══ Удаляем старые HDR FBO (если есть) ══
+    // ---------------------------------------------------------в•ђ РЈРґР°Р»СЏРµРј СЃС‚Р°СЂС‹Рµ HDR FBO (РµСЃР»Рё РµСЃС‚СЊ) в•ђв•ђ
     glDeleteFramebuffers(1, &sceneHDRFBO);
     glDeleteTextures(1, &sceneHDRTex);
     glDeleteFramebuffers(1, &gameHDRFBO);
     glDeleteTextures(1, &gameHDRTex);
 
-    // ════════════════════════════════════════════════════════════════
-    // Пересоздаём Scene MSAA FBO
-    // ══════════════════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Scene MSAA FBO
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     glGenFramebuffers(1, &sceneMSFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneMSFBO);
 
@@ -118,9 +141,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ══════════════════════════════════════════════════════════════════
-    // Пересоздаём Game MSAA FBO
-    // ══════════════════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Game MSAA FBO
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     glGenFramebuffers(1, &gameMSFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gameMSFBO);
 
@@ -136,9 +159,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ══════════════════════════════════════════════════════════════════
-    // Пересоздаём Scene Resolve FBO (MSAA → single-sampled)
-    // ══════════════════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Scene Resolve FBO (MSAA в†’ single-sampled)
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     glGenFramebuffers(1, &sceneFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
 
@@ -156,9 +179,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ══════════════════════════════════════════════════════════════════
-    // Пересоздаём Game Resolve FBO (MSAA → single-sampled)
-    // ══════════════════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Game Resolve FBO (MSAA в†’ single-sampled)
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     glGenFramebuffers(1, &gameFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gameFBO);
 
@@ -176,9 +199,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ══════════════════════════════════════════════════════════════════
-    // Пересоздаём HDR FBO для Scene
-    // ══════════════════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // РџРµСЂРµСЃРѕР·РґР°С‘Рј HDR FBO РґР»СЏ Scene
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     glGenFramebuffers(1, &sceneHDRFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneHDRFBO);
     glGenTextures(1, &sceneHDRTex);
@@ -191,9 +214,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneHDRTex, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ══════════════════════════════════════════════════════════════════
-    // Пересоздаём HDR FBO для Game
-    // ══════════════════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // РџРµСЂРµСЃРѕР·РґР°С‘Рј HDR FBO РґР»СЏ Game
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     glGenFramebuffers(1, &gameHDRFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gameHDRFBO);
     glGenTextures(1, &gameHDRTex);
@@ -206,14 +229,13 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gameHDRTex, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    logInfo("ViewportFBO resize complete");
 }
 
 int main(int argc, char** argv)
 {
     std::cout<<"Engine starting..."<<std::endl;
 
-    // ── Разбор аргументов командной строки: --play "путь/к/сцене" / --project "путь" ──
+    // в”Ђв”Ђ Р Р°Р·Р±РѕСЂ Р°СЂРіСѓРјРµРЅС‚РѕРІ РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРё: --play "РїСѓС‚СЊ/Рє/СЃС†РµРЅРµ" / --project "РїСѓС‚СЊ" в”Ђв”Ђ
     for (int i=1;i<argc;i++) {
         std::string a = argv[i];
         if (a=="--play" && i+1<argc) {
@@ -226,9 +248,9 @@ int main(int argc, char** argv)
             i++;
         }
     }
-    // ── Если аргумент не передан — ищем player.cfg рядом с .exe ──
-    // (так собранная через Build игра запускается просто двойным
-    //  кликом, без необходимости вручную прописывать аргументы)
+    // в”Ђв”Ђ Р•СЃР»Рё Р°СЂРіСѓРјРµРЅС‚ РЅРµ РїРµСЂРµРґР°РЅ вЂ” РёС‰РµРј player.cfg СЂСЏРґРѕРј СЃ .exe в”Ђв”Ђ
+    // (С‚Р°Рє СЃРѕР±СЂР°РЅРЅР°СЏ С‡РµСЂРµР· Build РёРіСЂР° Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ РїСЂРѕСЃС‚Рѕ РґРІРѕР№РЅС‹Рј
+    //  РєР»РёРєРѕРј, Р±РµР· РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РІСЂСѓС‡РЅСѓСЋ РїСЂРѕРїРёСЃС‹РІР°С‚СЊ Р°СЂРіСѓРјРµРЅС‚С‹)
     if (!g_PlayerMode && fs::exists("player.cfg")) {
         std::ifstream pf("player.cfg");
         std::string scenePath;
@@ -252,6 +274,14 @@ int main(int argc, char** argv)
     std::string windowTitle = g_PlayerMode ? "Game" : "VisualEngine v0.1";
     VE::Window* window=VE::Window::Create(VE::WindowProps(windowTitle, screenW, screenH));
     GLFWwindow* native=(GLFWwindow*)window->GetNativeWindow();
+
+    // Явно загружаем GLAD в main.cpp (контекст может быть потерян)
+    glfwMakeContextCurrent(native);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD in main.cpp" << std::endl;
+        return -1;
+    }
+
     glfwMaximizeWindow(native);
     glfwGetWindowSize(native, &screenW, &screenH);
     glfwSetMouseButtonCallback(native,mouse_button_callback);
@@ -268,7 +298,7 @@ int main(int argc, char** argv)
 
     IMGUI_CHECKVERSION();ImGui::CreateContext();
     VE::InitWhiteTexture();
-    // ── Load logo texture ──
+    // в”Ђв”Ђ Load logo texture в”Ђв”Ђ
     static GLuint g_LogoTex = 0;
     if (g_LogoTex == 0 && fs::exists("logo.png")) {
         g_LogoTex = VE::LoadTextureRaw("logo.png");
@@ -278,22 +308,69 @@ int main(int argc, char** argv)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(native,true);
-    // ── Наш коллбэк мыши регистрируем ПОСЛЕ ImGui и запоминаем его коллбэк —
-    //    иначе ImGui_ImplGlfw_InitForOpenGL(...,true) тихо подменяет
-    //    glfwSetCursorPosCallback своим, и g_RawMouseDX/DY (для FPS-камеры
-    //    из Lua) вообще перестают обновляться.
+    // в”Ђв”Ђ РќР°С€ РєРѕР»Р»Р±СЌРє РјС‹С€Рё СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РџРћРЎР›Р• ImGui Рё Р·Р°РїРѕРјРёРЅР°РµРј РµРіРѕ РєРѕР»Р»Р±СЌРє вЂ”
+    //    РёРЅР°С‡Рµ ImGui_ImplGlfw_InitForOpenGL(...,true) С‚РёС…Рѕ РїРѕРґРјРµРЅСЏРµС‚
+    //    glfwSetCursorPosCallback СЃРІРѕРёРј, Рё g_RawMouseDX/DY (РґР»СЏ FPS-РєР°РјРµСЂС‹
+    //    РёР· Lua) РІРѕРѕР±С‰Рµ РїРµСЂРµСЃС‚Р°СЋС‚ РѕР±РЅРѕРІР»СЏС‚СЊСЃСЏ.
     g_PrevCursorPosCallback = glfwSetCursorPosCallback(native, mouse_callback);
+    // Явно загружаем GLAD перед инициализацией ImGui
+    glfwMakeContextCurrent(native);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "FATAL: Failed to initialize GLAD!" << std::endl;
+        return -1;
+    }
+    std::cout<< "GLAD loaded successfully" << std::endl;
+    // Явно загружаем GLAD перед инициализацией ImGui
+    glfwMakeContextCurrent(native);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "FATAL: Failed to initialize GLAD!" << std::endl;
+        return -1;
+    }
+    std::cout<< "GLAD loaded successfully" << std::endl;
+    // Явно загружаем GLAD перед инициализацией ImGui
+    glfwMakeContextCurrent(native);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "FATAL: Failed to initialize GLAD!" << std::endl;
+        return -1;
+    }
+    std::cout<< "GLAD loaded successfully" << std::endl;
     ImGui_ImplOpenGL3_Init("#version 330");
 
-    // ── Шрифт: дефолтный шрифт ImGui поддерживает только ASCII (0x20-0xFF),
-    //    из-за чего кириллица и даже длинное тире "—" рисовались как "?".
-    //    Грузим системный Segoe UI (есть на любом Windows) с расширенным
-    //    диапазоном символов: латиница + кириллица + типографские тире/кавычки. ──
+    // Явно убеждаемся что GL контекст активен и GLAD загружен
+    glfwMakeContextCurrent(native);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "FATAL: GLAD failed to load!" << std::endl;
+        return -1;
+    }
+    std::cout<< "GL version: " << GLVersion.major << "." << GLVersion.minor << std::endl;
+
+
+    // Проверка: GLAD должен быть загружен до ImGui_ImplOpenGL3_Init
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "GLAD failed to load in main.cpp!" << std::endl;
+        return -1;
+    }
+    std::cout<< "GLAD loaded: GL " << GLVersion.major << "." << GLVersion.minor << std::endl;
+
+
+    // Проверка: GLAD должен быть загружен до ImGui_ImplOpenGL3_Init
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "GLAD failed to load in main.cpp!" << std::endl;
+        return -1;
+    }
+    std::cout<< "GLAD loaded: GL " << GLVersion.major << "." << GLVersion.minor << std::endl;
+
+    if (ImGui::GetIO().BackendRendererUserData == nullptr) { std::cerr << "ImGui_ImplOpenGL3_Init failed!" << std::endl; return -1; }
+
+    // в”Ђв”Ђ РЁСЂРёС„С‚: РґРµС„РѕР»С‚РЅС‹Р№ С€СЂРёС„С‚ ImGui РїРѕРґРґРµСЂР¶РёРІР°РµС‚ С‚РѕР»СЊРєРѕ ASCII (0x20-0xFF),
+    //    РёР·-Р·Р° С‡РµРіРѕ РєРёСЂРёР»Р»РёС†Р° Рё РґР°Р¶Рµ РґР»РёРЅРЅРѕРµ С‚РёСЂРµ "вЂ”" СЂРёСЃРѕРІР°Р»РёСЃСЊ РєР°Рє "?".
+    //    Р“СЂСѓР·РёРј СЃРёСЃС‚РµРјРЅС‹Р№ Segoe UI (РµСЃС‚СЊ РЅР° Р»СЋР±РѕРј Windows) СЃ СЂР°СЃС€РёСЂРµРЅРЅС‹Рј
+    //    РґРёР°РїР°Р·РѕРЅРѕРј СЃРёРјРІРѕР»РѕРІ: Р»Р°С‚РёРЅРёС†Р° + РєРёСЂРёР»Р»РёС†Р° + С‚РёРїРѕРіСЂР°С„СЃРєРёРµ С‚РёСЂРµ/РєР°РІС‹С‡РєРё. в”Ђв”Ђ
     {
         ImFontGlyphRangesBuilder builder;
         builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
         builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
-        static const ImWchar extraChars[] = { 0x2010,0x2015, 0x2018,0x201F, 0x2026,0x2026, 0 }; // тире, кавычки-ёлочки, многоточие
+        static const ImWchar extraChars[] = { 0x2010,0x2015, 0x2018,0x201F, 0x2026,0x2026, 0 }; // С‚РёСЂРµ, РєР°РІС‹С‡РєРё-С‘Р»РѕС‡РєРё, РјРЅРѕРіРѕС‚РѕС‡РёРµ
         builder.AddRanges(extraChars);
         static ImVector<ImWchar> ranges;
         builder.BuildRanges(&ranges);
@@ -310,11 +387,31 @@ int main(int argc, char** argv)
                 break;
             }
         }
-        if (!fontLoaded) io.Fonts->AddFontDefault(); // на случай если система совсем без стандартных шрифтов
+        if (!fontLoaded) io.Fonts->AddFontDefault(); // РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё СЃРёСЃС‚РµРјР° СЃРѕРІСЃРµРј Р±РµР· СЃС‚Р°РЅРґР°СЂС‚РЅС‹С… С€СЂРёС„С‚РѕРІ
+        
+        // Font Awesome icons
+        {
+            static const ImWchar iconRanges[] = { 0xf000, 0xf8ff, 0 };
+            ImFontConfig iconCfg;
+            iconCfg.MergeMode = true;
+            iconCfg.GlyphOffset.y = 1.f;
+            const char* iconFont = "C:\\Users\\loboy\\Downloads\\VisualEngine\\assets\\fonts\\fa-solid-900.ttf";
+            if (fs::exists(iconFont))
+                io.Fonts->AddFontFromFileTTF(iconFont, 20.0f, &iconCfg, iconRanges);
+        }
     }
 
     VE::Shader shader(vertSrc,fragSrc);
     VE::Shader skinnedShader(vertSkinnedSrc,fragSrc);
+VE::Shader depthShader(depthVertSrc,depthFragSrc);
+VE::Shader depthSkinnedShader(depthSkinnedVertSrc,depthFragSrc);
+static VE::ShadowMap shadowMapInstance;
+g_ShadowMap=&shadowMapInstance;
+g_DepthShader=&depthShader;
+g_DepthSkinnedShader=&depthSkinnedShader;
+glBindFramebuffer(GL_FRAMEBUFFER, shadowMapInstance.FBO);
+glClear(GL_DEPTH_BUFFER_BIT);
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
     VE::Shader outlineShader(outlineVert,outlineFrag);
     VE::Shader gridShader(gridVert,gridFrag);
     VE::Shader gizmoShader(gizmoVert,gizmoFrag);
@@ -350,8 +447,8 @@ int main(int argc, char** argv)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,gameRBO);
     glBindFramebuffer(GL_FRAMEBUFFER,0);
 
-    // ── MSAA: рендерим в мультисэмпл-буфер, потом resolve-блитом переносим в уже
-    //    существующие sceneTex/gameTex — их саму текстуру и ImGui::Image трогать не пришлось ──
+    // в”Ђв”Ђ MSAA: СЂРµРЅРґРµСЂРёРј РІ РјСѓР»СЊС‚РёСЃСЌРјРїР»-Р±СѓС„РµСЂ, РїРѕС‚РѕРј resolve-Р±Р»РёС‚РѕРј РїРµСЂРµРЅРѕСЃРёРј РІ СѓР¶Рµ
+    //    СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёРµ sceneTex/gameTex вЂ” РёС… СЃР°РјСѓ С‚РµРєСЃС‚СѓСЂСѓ Рё ImGui::Image С‚СЂРѕРіР°С‚СЊ РЅРµ РїСЂРёС€Р»РѕСЃСЊ в”Ђв”Ђ
     const int MSAA_SAMPLES = 4;
     unsigned int sceneMSFBO,sceneMSColorRBO,sceneMSDepthRBO;
     glGenFramebuffers(1,&sceneMSFBO);glBindFramebuffer(GL_FRAMEBUFFER,sceneMSFBO);
@@ -374,7 +471,7 @@ int main(int argc, char** argv)
     glBindFramebuffer(GL_FRAMEBUFFER,0);
     glEnable(GL_MULTISAMPLE);
 
-    // ── Bloom: HDR-резолв (float, без tonemap) + буферы под bright-pass/blur ──
+    // в”Ђв”Ђ Bloom: HDR-СЂРµР·РѕР»РІ (float, Р±РµР· tonemap) + Р±СѓС„РµСЂС‹ РїРѕРґ bright-pass/blur в”Ђв”Ђ
     auto makeHDRFBO = [](unsigned int& fbo, unsigned int& tex, int w, int h){
         glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
         glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
@@ -388,12 +485,12 @@ int main(int argc, char** argv)
     };
     unsigned int sceneHDRFBO,sceneHDRTex; makeHDRFBO(sceneHDRFBO,sceneHDRTex,3840,2160);
     unsigned int gameHDRFBO,gameHDRTex;   makeHDRFBO(gameHDRFBO,gameHDRTex,3840,2160);
-    // bright-pass/blur — половинное разрешение, этого достаточно для мягкого свечения и заметно быстрее
+    // bright-pass/blur вЂ” РїРѕР»РѕРІРёРЅРЅРѕРµ СЂР°Р·СЂРµС€РµРЅРёРµ, СЌС‚РѕРіРѕ РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґР»СЏ РјСЏРіРєРѕРіРѕ СЃРІРµС‡РµРЅРёСЏ Рё Р·Р°РјРµС‚РЅРѕ Р±С‹СЃС‚СЂРµРµ
     unsigned int brightFBO,brightTex; makeHDRFBO(brightFBO,brightTex,1920,1080);
     unsigned int pingpongFBO[2],pingpongTex[2];
     for(int i=0;i<2;i++) makeHDRFBO(pingpongFBO[i],pingpongTex[i],1920,1080);
 
-    // fullscreen-quad для всех пост-процесс проходов
+    // fullscreen-quad РґР»СЏ РІСЃРµС… РїРѕСЃС‚-РїСЂРѕС†РµСЃСЃ РїСЂРѕС…РѕРґРѕРІ
     unsigned int quadVAO,quadVBO;
     {
         float qv[] = { -1,1,0,1,  -1,-1,0,0,  1,-1,1,0,   -1,1,0,1,  1,-1,1,0,  1,1,1,1 };
@@ -409,22 +506,22 @@ int main(int argc, char** argv)
     VE::Shader bloomBlurShader(postVertSrc,blurFragSrc);
     VE::Shader bloomCompositeShader(postVertSrc,compositeFragSrc);
 
-    float g_BloomThreshold=1.0f, g_BloomStrength=0.6f, g_Exposure=1.0f;
+    float g_BloomThreshold=1.5f, g_BloomStrength=0.25f, g_Exposure=0.92f;
     bool  g_BloomEnabled=true;
 
-    // Резолвит HDR-сцену (hdrTex) в bright-pass -> размытие -> композит+tonemap,
-    // финальный LDR-результат пишет в outputFBO (это sceneFBO/gameFBO — их сама текстура
-    // для ImGui::Image не меняется, меняется только то, что в неё рисуется).
+    // Р РµР·РѕР»РІРёС‚ HDR-СЃС†РµРЅСѓ (hdrTex) РІ bright-pass -> СЂР°Р·РјС‹С‚РёРµ -> РєРѕРјРїРѕР·РёС‚+tonemap,
+    // С„РёРЅР°Р»СЊРЅС‹Р№ LDR-СЂРµР·СѓР»СЊС‚Р°С‚ РїРёС€РµС‚ РІ outputFBO (СЌС‚Рѕ sceneFBO/gameFBO вЂ” РёС… СЃР°РјР° С‚РµРєСЃС‚СѓСЂР°
+    // РґР»СЏ ImGui::Image РЅРµ РјРµРЅСЏРµС‚СЃСЏ, РјРµРЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ С‚Рѕ, С‡С‚Рѕ РІ РЅРµС‘ СЂРёСЃСѓРµС‚СЃСЏ).
     auto ApplyBloomAndTonemap = [&](unsigned int hdrTex, unsigned int outputFBO, int w, int h){
-        int bw=w/4, bh=h/4; if(bw<1)bw=1; if(bh<1)bh=1; // четверть разрешения — заметно дешевле, для bloom этого достаточно
+        int bw=w/4, bh=h/4; if(bw<1)bw=1; if(bh<1)bh=1; // С‡РµС‚РІРµСЂС‚СЊ СЂР°Р·СЂРµС€РµРЅРёСЏ вЂ” Р·Р°РјРµС‚РЅРѕ РґРµС€РµРІР»Рµ, РґР»СЏ bloom СЌС‚РѕРіРѕ РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ
 
-        // Полноэкранные quad-проходы — 2D, без глубины/блендинга. Если оставить
-        // GL_DEPTH_TEST включённым (он включён после 3D-рендера сцены), quad проваливает
-        // тест глубины против неочищенного буфера глубины и просто не рисуется — чёрный экран.
+        // РџРѕР»РЅРѕСЌРєСЂР°РЅРЅС‹Рµ quad-РїСЂРѕС…РѕРґС‹ вЂ” 2D, Р±РµР· РіР»СѓР±РёРЅС‹/Р±Р»РµРЅРґРёРЅРіР°. Р•СЃР»Рё РѕСЃС‚Р°РІРёС‚СЊ
+        // GL_DEPTH_TEST РІРєР»СЋС‡С‘РЅРЅС‹Рј (РѕРЅ РІРєР»СЋС‡С‘РЅ РїРѕСЃР»Рµ 3D-СЂРµРЅРґРµСЂР° СЃС†РµРЅС‹), quad РїСЂРѕРІР°Р»РёРІР°РµС‚
+        // С‚РµСЃС‚ РіР»СѓР±РёРЅС‹ РїСЂРѕС‚РёРІ РЅРµРѕС‡РёС‰РµРЅРЅРѕРіРѕ Р±СѓС„РµСЂР° РіР»СѓР±РёРЅС‹ Рё РїСЂРѕСЃС‚Рѕ РЅРµ СЂРёСЃСѓРµС‚СЃСЏ вЂ” С‡С‘СЂРЅС‹Р№ СЌРєСЂР°РЅ.
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
 
-        // 1) bright-pass в половинном разрешении
+        // 1) bright-pass РІ РїРѕР»РѕРІРёРЅРЅРѕРј СЂР°Р·СЂРµС€РµРЅРёРё
         glBindFramebuffer(GL_FRAMEBUFFER,brightFBO); glViewport(0,0,bw,bh);
         bloomBrightShader.Use();
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrTex);
@@ -432,7 +529,7 @@ int main(int argc, char** argv)
         glUniform1f(glGetUniformLocation(bloomBrightShader.ID,"uThreshold"),g_BloomThreshold);
         glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
 
-        // 2) гауссово размытие пинг-понгом (5 проходов туда-обратно = мягкое широкое свечение)
+        // 2) РіР°СѓСЃСЃРѕРІРѕ СЂР°Р·РјС‹С‚РёРµ РїРёРЅРі-РїРѕРЅРіРѕРј (5 РїСЂРѕС…РѕРґРѕРІ С‚СѓРґР°-РѕР±СЂР°С‚РЅРѕ = РјСЏРіРєРѕРµ С€РёСЂРѕРєРѕРµ СЃРІРµС‡РµРЅРёРµ)
         bool horizontal=true; unsigned int srcTex=brightTex;
         bloomBlurShader.Use();
         glUniform2f(glGetUniformLocation(bloomBlurShader.ID,"uTexelSize"),1.0f/bw,1.0f/bh);
@@ -446,7 +543,7 @@ int main(int argc, char** argv)
             horizontal=!horizontal;
         }
 
-        // 3) композит: HDR-сцена + размытый bloom -> ACES tonemap -> итоговый LDR в outputFBO
+        // 3) РєРѕРјРїРѕР·РёС‚: HDR-СЃС†РµРЅР° + СЂР°Р·РјС‹С‚С‹Р№ bloom -> ACES tonemap -> РёС‚РѕРіРѕРІС‹Р№ LDR РІ outputFBO
         glBindFramebuffer(GL_FRAMEBUFFER,outputFBO); glViewport(0,0,w,h);
         bloomCompositeShader.Use();
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrTex);
@@ -457,17 +554,18 @@ int main(int argc, char** argv)
         glUniform1f(glGetUniformLocation(bloomCompositeShader.ID,"uExposure"),g_Exposure);
         glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
         glActiveTexture(GL_TEXTURE0);
-        glEnable(GL_DEPTH_TEST); // возвращаем состояние для следующего 3D-рендера
+        glEnable(GL_DEPTH_TEST); // РѕР·РІСЂР°С‰Р°РµРј СЃРѕСЃС‚РѕСЏРЅРёРµ РґР»СЏ СЃР»РµРґСѓСЋС‰РµРіРѕ 3D-СЂРµРЅРґРµСЂР°
     };
 
     std::vector<SceneObject> objects;
-    g_LuaObjectsPtr = &objects; // для Animation.* API из Lua
+    g_LuaObjectsPtr = &objects; // РґР»СЏ Animation.* API РёР· Lua
     std::vector<LightObject> lights;
     std::vector<CameraObject> sceneCameras;
-    g_LuaLightsPtr  = &lights;      // для SaveScene из Lua
-    g_LuaCamerasPtr = &sceneCameras; // для Scene.SetCamera из Lua
+    g_LuaLightsPtr  = &lights;      // РґР»СЏ SaveScene РёР· Lua
+    g_LuaCamerasPtr = &sceneCameras; // РґР»СЏ Scene.SetCamera РёР· Lua
     int sel=-1,selLight=-1,selCamera=-1;
-    SelectionType selType=SelectionType::None;
+static bool gameCameraInitialized = false;
+    SelectionType selType=SelectionType::None; selUI=-1; selSprite2D=-1;
 
     {SceneObject o;o.name="Cube";o.pos=glm::vec3(0,.5f,0);o.type=PrimitiveType::Cube;o.color=glm::vec3(1.f,1.f,1.f);
      o.ecsID=scene.CreateEntity(o.name);scene.GetTransform(o.ecsID).Position=o.pos;
@@ -477,7 +575,7 @@ int main(int argc, char** argv)
     {CameraObject cam;cam.name="GameCamera_1";cam.pos=glm::vec3(0,2,5);
      cam.ecsID=scene.CreateEntity(cam.name);scene.registry.AddComponent<VE::CameraComponent>(cam.ecsID,true);sceneCameras.push_back(cam);}
     sel=0;selType=SelectionType::Object;
-    logInfo("ECS initialized — "+std::to_string(scene.EntityCount())+" entities");
+    logInfo("ECS initialized вЂ” "+std::to_string(scene.EntityCount())+" entities");
 
     VE::ScriptEditor scriptEditor;
     std::string projectRoot = g_PlayerMode
@@ -490,7 +588,7 @@ int main(int argc, char** argv)
     std::string assetCurrentPath=projectRoot+"\\Assets",assetSelected="";
     static char assetSearch[128]={};
 
-    // ── Стартовая структура проекта (как Unity: сразу готовые папки) ──
+    // в”Ђв”Ђ РЎС‚Р°СЂС‚РѕРІР°СЏ СЃС‚СЂСѓРєС‚СѓСЂР° РїСЂРѕРµРєС‚Р° (РєР°Рє Unity: СЃСЂР°Р·Сѓ РіРѕС‚РѕРІС‹Рµ РїР°РїРєРё) в”Ђв”Ђ
     {
         const char* starterFolders[] = {
             "Assets\\Scenes",
@@ -506,40 +604,45 @@ int main(int argc, char** argv)
         }
     }
 
-    logInfo("Engine initialized — VisualEngine v0.1");
+    logInfo("Engine initialized вЂ” VisualEngine v0.1");
+    VE2D::Init();
     logInfo("Scene loaded: Untitled");
+        g_SkipPropagate=true;
 
     VE::AudioEngine::Get().Init();
     VE::SaveSystem::Get().SetSaveDir(projectRoot + "\\Saves");
     VE::BuildSystem::Get().SetEngineRoot((fs::current_path().parent_path()).string());
 
-    // ── SceneManager: регистрируем коллбэк загрузки сцены ──
+    // в”Ђв”Ђ SceneManager: СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РєРѕР»Р»Р±СЌРє Р·Р°РіСЂСѓР·РєРё СЃС†РµРЅС‹ в”Ђв”Ђ
     VE::SceneManager::Get().SetLoadCallback([&](const std::string& path){
-        // Если идёт Play — стопаем
+        // Р•СЃР»Рё РёРґС‘С‚ Play вЂ” СЃС‚РѕРїР°РµРј
         if(isPlaying){
             isPlaying=false; isPaused=false;
+    glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    g_FpsLock=false;
             if(g_MouseCaptured){ g_MouseCaptured=false; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL); }
             VE::Physics::Get().ClearAllBodies();
             for(auto& obj:objects){ obj.luaInstances.clear(); }
         }
         objects.clear(); lights.clear(); sceneCameras.clear();
-        sel=-1; selLight=-1; selCamera=-1; selType=SelectionType::None;
+        sel=-1; selLight=-1; selCamera=-1; selType=SelectionType::None; selUI=-1; selSprite2D=-1;
         LoadScene(path,objects,lights,sceneCameras,sel,selType);
-        VE::UndoSystem::Get().Clear(); // новая сцена — старая история отмены больше не валидна
+        VE::UndoSystem::Get().Clear(); // РЅРѕРІР°СЏ СЃС†РµРЅР° вЂ” СЃС‚Р°СЂР°СЏ РёСЃС‚РѕСЂРёСЏ РѕС‚РјРµРЅС‹ Р±РѕР»СЊС€Рµ РЅРµ РІР°Р»РёРґРЅР°
         currentScenePath=path;
-        // Пересоздаём ECS сущности
+        // РџРµСЂРµСЃРѕР·РґР°С‘Рј ECS СЃСѓС‰РЅРѕСЃС‚Рё
         for(auto& o:objects){
             o.ecsID=scene.CreateEntity(o.name);
             scene.GetTransform(o.ecsID).Position=o.pos;
             scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
         }
         logInfo("Scene loaded: "+path);
-        // Player mode: как только сцена загрузилась — ставим флаг на автозапуск Play
-        // (саму StartPlay() вызвать здесь нельзя — она объявляется ниже по коду)
+        g_SkipPropagate=true;
+        // Player mode: РєР°Рє С‚РѕР»СЊРєРѕ СЃС†РµРЅР° Р·Р°РіСЂСѓР·РёР»Р°СЃСЊ вЂ” СЃС‚Р°РІРёРј С„Р»Р°Рі РЅР° Р°РІС‚РѕР·Р°РїСѓСЃРє Play
+        // (СЃР°РјСѓ StartPlay() РІС‹Р·РІР°С‚СЊ Р·РґРµСЃСЊ РЅРµР»СЊР·СЏ вЂ” РѕРЅР° РѕР±СЉСЏРІР»СЏРµС‚СЃСЏ РЅРёР¶Рµ РїРѕ РєРѕРґСѓ)
         if (g_PlayerMode) g_PlayerAutoPlayPending = true;
     });
 
-    // ── SceneManager: регистрируем коллбэк сохранения сцены (для SceneManager.SaveScene / SaveScene из Lua) ──
+    // в”Ђв”Ђ SceneManager: СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РєРѕР»Р»Р±СЌРє СЃРѕС…СЂР°РЅРµРЅРёСЏ СЃС†РµРЅС‹ (РґР»СЏ SceneManager.SaveScene / SaveScene РёР· Lua) в”Ђв”Ђ
     VE::SceneManager::Get().SetSaveCallback([&](const std::string& path){
         SaveScene(path, objects, lights, sceneCameras);
         currentScenePath = path;
@@ -548,11 +651,13 @@ int main(int argc, char** argv)
 
     glEnable(GL_DEPTH_TEST);glEnable(GL_STENCIL_TEST);
 
-    // ── Запуск Play: создаёт Lua-инстансы объектов и вызывает onStart() ──
-    // Вынесено в отдельную функцию, чтобы её мог вызвать и Play-кнопка
-    // редактора, и автозапуск в player mode (когда движок собран как игра).
+    // в”Ђв”Ђ Р—Р°РїСѓСЃРє Play: СЃРѕР·РґР°С‘С‚ Lua-РёРЅСЃС‚Р°РЅСЃС‹ РѕР±СЉРµРєС‚РѕРІ Рё РІС‹Р·С‹РІР°РµС‚ onStart() в”Ђв”Ђ
+    // Р’С‹РЅРµСЃРµРЅРѕ РІ РѕС‚РґРµР»СЊРЅСѓСЋ С„СѓРЅРєС†РёСЋ, С‡С‚РѕР±С‹ РµС‘ РјРѕРі РІС‹Р·РІР°С‚СЊ Рё Play-РєРЅРѕРїРєР°
+    // СЂРµРґР°РєС‚РѕСЂР°, Рё Р°РІС‚РѕР·Р°РїСѓСЃРє РІ player mode (РєРѕРіРґР° РґРІРёР¶РѕРє СЃРѕР±СЂР°РЅ РєР°Рє РёРіСЂР°).
     auto StartPlay = [&](){
+    gameCameraInitialized = false;
         isPlaying=true; isPaused=false;
+        g_WantGameTab=true;
         savedTransforms.clear();
         for(auto& obj:objects) savedTransforms.push_back({obj.pos,obj.rot,obj.scale});
         for(auto& obj:objects){
@@ -566,7 +671,7 @@ int main(int argc, char** argv)
             VE::HUD::Get().RegisterLua(luaInst->L);
             VE::SaveSystem::Get().RegisterLua(luaInst->L);
 
-            // ── Physics API: управление физикой СВОЕГО объекта ──
+            // в”Ђв”Ђ Physics API: СѓРїСЂР°РІР»РµРЅРёРµ С„РёР·РёРєРѕР№ РЎР’РћР•Р“Рћ РѕР±СЉРµРєС‚Р° в”Ђв”Ђ
             // Physics.AddForce(x,y,z) / AddImpulse(x,y,z) / SetVelocity(x,y,z)
             // Physics.GetVelocity() -> x,y,z / Physics.Stop()
             {
@@ -617,10 +722,10 @@ int main(int argc, char** argv)
                     return 0;
                 });
 
-                // ── Physics.AddRigidbody(mass?, useGravity?) — включить физику для СВОЕГО объекта.
-                //    Если у объекта ещё нет коллайдера — добавляет Box-коллайдер по размеру объекта
-                //    (иначе тело будет падать, но ни с чем не сталкиваться — Physics.Step требует
-                //    Rigidbody+Collider+Transform одновременно, см. Physics.h::SyncToBullet). ──
+                // в”Ђв”Ђ Physics.AddRigidbody(mass?, useGravity?) вЂ” РІРєР»СЋС‡РёС‚СЊ С„РёР·РёРєСѓ РґР»СЏ РЎР’РћР•Р“Рћ РѕР±СЉРµРєС‚Р°.
+                //    Р•СЃР»Рё Сѓ РѕР±СЉРµРєС‚Р° РµС‰С‘ РЅРµС‚ РєРѕР»Р»Р°Р№РґРµСЂР° вЂ” РґРѕР±Р°РІР»СЏРµС‚ Box-РєРѕР»Р»Р°Р№РґРµСЂ РїРѕ СЂР°Р·РјРµСЂСѓ РѕР±СЉРµРєС‚Р°
+                //    (РёРЅР°С‡Рµ С‚РµР»Рѕ Р±СѓРґРµС‚ РїР°РґР°С‚СЊ, РЅРѕ РЅРё СЃ С‡РµРј РЅРµ СЃС‚Р°Р»РєРёРІР°С‚СЊСЃСЏ вЂ” Physics.Step С‚СЂРµР±СѓРµС‚
+                //    Rigidbody+Collider+Transform РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ, СЃРј. Physics.h::SyncToBullet). в”Ђв”Ђ
                 pushSelfFn("AddRigidbody", [](lua_State* L)->int{
                     VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     float mass = (float)luaL_optnumber(L,1,1.0);
@@ -644,12 +749,12 @@ int main(int argc, char** argv)
                     return 0;
                 });
 
-                // ── Physics.AddCollider(shape, a, b, c, isTrigger?) — добавить/заменить форму коллизий.
-                //    shape="box":     a,b,c = half-size по X,Y,Z (по умолчанию 0.5 каждый)
+                // в”Ђв”Ђ Physics.AddCollider(shape, a, b, c, isTrigger?) вЂ” РґРѕР±Р°РІРёС‚СЊ/Р·Р°РјРµРЅРёС‚СЊ С„РѕСЂРјСѓ РєРѕР»Р»РёР·РёР№.
+                //    shape="box":     a,b,c = half-size РїРѕ X,Y,Z (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ 0.5 РєР°Р¶РґС‹Р№)
                 //    shape="sphere":  a = radius
                 //    shape="capsule": a = radius, b = height
-                //    isTrigger — необязательный bool, последним аргументом (объекты проходят
-                //    сквозь, но событие столкновения всё равно происходит). ──
+                //    isTrigger вЂ” РЅРµРѕР±СЏР·Р°С‚РµР»СЊРЅС‹Р№ bool, РїРѕСЃР»РµРґРЅРёРј Р°СЂРіСѓРјРµРЅС‚РѕРј (РѕР±СЉРµРєС‚С‹ РїСЂРѕС…РѕРґСЏС‚
+                //    СЃРєРІРѕР·СЊ, РЅРѕ СЃРѕР±С‹С‚РёРµ СЃС‚РѕР»РєРЅРѕРІРµРЅРёСЏ РІСЃС‘ СЂР°РІРЅРѕ РїСЂРѕРёСЃС…РѕРґРёС‚). в”Ђв”Ђ
                 pushSelfFn("AddCollider", [](lua_State* L)->int{
                     VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     std::string shape = luaL_optstring(L,1,"box");
@@ -673,8 +778,8 @@ int main(int argc, char** argv)
                     return 0;
                 });
 
-                // ── Physics.Raycast(ox,oy,oz, dx,dy,dz, maxDist) — для выстрелов, проверки земли, клика по объекту.
-                //    Возвращает: hit(bool), entity(int|nil), hitX,hitY,hitZ, normalX,normalY,normalZ, distance ──
+                // в”Ђв”Ђ Physics.Raycast(ox,oy,oz, dx,dy,dz, maxDist) вЂ” РґР»СЏ РІС‹СЃС‚СЂРµР»РѕРІ, РїСЂРѕРІРµСЂРєРё Р·РµРјР»Рё, РєР»РёРєР° РїРѕ РѕР±СЉРµРєС‚Сѓ.
+                //    Р’РѕР·РІСЂР°С‰Р°РµС‚: hit(bool), entity(int|nil), hitX,hitY,hitZ, normalX,normalY,normalZ, distance в”Ђв”Ђ
                 lua_pushstring(LL, "Raycast");
                 lua_pushcclosure(LL, [](lua_State* L)->int{
                     glm::vec3 origin((float)luaL_optnumber(L,1,0), (float)luaL_optnumber(L,2,0), (float)luaL_optnumber(L,3,0));
@@ -690,10 +795,10 @@ int main(int argc, char** argv)
                 }, 0);
                 lua_settable(LL, -3);
 
-                // ── Physics.RaycastAll(ox,oy,oz, dx,dy,dz, maxDist?) — ВСЕ пересечения вдоль луча
-                //    (не только ближайшее, как Raycast) — для дробовика/луча сквозь стекло и т.п.
-                //    Возвращает Lua-массив таблиц: { {entity=.., x=.., y=.., z=.., nx=.., ny=.., nz=.., distance=..}, ... }
-                //    отсортированный по расстоянию (ближайший первый). ──
+                // в”Ђв”Ђ Physics.RaycastAll(ox,oy,oz, dx,dy,dz, maxDist?) вЂ” Р’РЎР• РїРµСЂРµСЃРµС‡РµРЅРёСЏ РІРґРѕР»СЊ Р»СѓС‡Р°
+                //    (РЅРµ С‚РѕР»СЊРєРѕ Р±Р»РёР¶Р°Р№С€РµРµ, РєР°Рє Raycast) вЂ” РґР»СЏ РґСЂРѕР±РѕРІРёРєР°/Р»СѓС‡Р° СЃРєРІРѕР·СЊ СЃС‚РµРєР»Рѕ Рё С‚.Рї.
+                //    Р’РѕР·РІСЂР°С‰Р°РµС‚ Lua-РјР°СЃСЃРёРІ С‚Р°Р±Р»РёС†: { {entity=.., x=.., y=.., z=.., nx=.., ny=.., nz=.., distance=..}, ... }
+                //    РѕС‚СЃРѕСЂС‚РёСЂРѕРІР°РЅРЅС‹Р№ РїРѕ СЂР°СЃСЃС‚РѕСЏРЅРёСЋ (Р±Р»РёР¶Р°Р№С€РёР№ РїРµСЂРІС‹Р№). в”Ђв”Ђ
                 lua_pushstring(LL, "RaycastAll");
                 lua_pushcclosure(LL, [](lua_State* L)->int{
                     glm::vec3 origin((float)luaL_optnumber(L,1,0), (float)luaL_optnumber(L,2,0), (float)luaL_optnumber(L,3,0));
@@ -712,14 +817,14 @@ int main(int argc, char** argv)
                         lua_pushnumber(L,hits[i].normal.y);  lua_setfield(L,-2,"ny");
                         lua_pushnumber(L,hits[i].normal.z);  lua_setfield(L,-2,"nz");
                         lua_pushnumber(L,hits[i].distance);  lua_setfield(L,-2,"distance");
-                        lua_rawseti(L,-2,(int)(i+1)); // Lua-массивы с 1
+                        lua_rawseti(L,-2,(int)(i+1)); // Lua-РјР°СЃСЃРёРІС‹ СЃ 1
                     }
                     return 1;
                 }, 0);
                 lua_settable(LL, -3);
 
-                // ── Physics.CheckCollision(a, b) — соприкасаются ли Entity a и b прямо сейчас.
-                //    Physics.CheckCollision(otherID) — короткая форма: проверить СВОЙ объект и otherID. ──
+                // в”Ђв”Ђ Physics.CheckCollision(a, b) вЂ” СЃРѕРїСЂРёРєР°СЃР°СЋС‚СЃСЏ Р»Рё Entity a Рё b РїСЂСЏРјРѕ СЃРµР№С‡Р°СЃ.
+                //    Physics.CheckCollision(otherID) вЂ” РєРѕСЂРѕС‚РєР°СЏ С„РѕСЂРјР°: РїСЂРѕРІРµСЂРёС‚СЊ РЎР’РћР™ РѕР±СЉРµРєС‚ Рё otherID. в”Ђв”Ђ
                 pushSelfFn("CheckCollision", [](lua_State* L)->int{
                     VE::EntityID selfId=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     VE::EntityID a, b;
@@ -737,8 +842,8 @@ int main(int argc, char** argv)
                 lua_setglobal(LL, "Physics");
             }
 
-            // ── Scene API: найти другой объект по имени и прочитать/задать позицию ──
-            // Scene.GetPosition("Name") -> x,y,z (ничего, если не найден)
+            // в”Ђв”Ђ Scene API: РЅР°Р№С‚Рё РґСЂСѓРіРѕР№ РѕР±СЉРµРєС‚ РїРѕ РёРјРµРЅРё Рё РїСЂРѕС‡РёС‚Р°С‚СЊ/Р·Р°РґР°С‚СЊ РїРѕР·РёС†РёСЋ в”Ђв”Ђ
+            // Scene.GetPosition("Name") -> x,y,z (РЅРёС‡РµРіРѕ, РµСЃР»Рё РЅРµ РЅР°Р№РґРµРЅ)
             // Scene.SetPosition("Name", x,y,z)
             // Scene.Exists("Name") -> bool
             {
@@ -784,11 +889,11 @@ int main(int argc, char** argv)
                 }, 1);
                 lua_settable(LL, -3);
 
-                // ── Scene.Instantiate(templateName, x,y,z) -> newName | nil ──
-                // Клонирует уже существующий объект (используй его как "префаб": разместил в сцене
-                // один раз, дальше спавнишь копии по имени). Копирует меш/материалы/физику/скейл.
-                // Свои Lua-скрипты клон НЕ запускает — им управляет скрипт, который его заспавнил
-                // (так проще для пуль/врагов: один "менеджер" двигает и удаляет их по имени).
+                // в”Ђв”Ђ Scene.Instantiate(templateName, x,y,z) -> newName | nil в”Ђв”Ђ
+                // РљР»РѕРЅРёСЂСѓРµС‚ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ РѕР±СЉРµРєС‚ (РёСЃРїРѕР»СЊР·СѓР№ РµРіРѕ РєР°Рє "РїСЂРµС„Р°Р±": СЂР°Р·РјРµСЃС‚РёР» РІ СЃС†РµРЅРµ
+                // РѕРґРёРЅ СЂР°Р·, РґР°Р»СЊС€Рµ СЃРїР°РІРЅРёС€СЊ РєРѕРїРёРё РїРѕ РёРјРµРЅРё). РљРѕРїРёСЂСѓРµС‚ РјРµС€/РјР°С‚РµСЂРёР°Р»С‹/С„РёР·РёРєСѓ/СЃРєРµР№Р».
+                // РІРѕРё Lua-СЃРєСЂРёРїС‚С‹ РєР»РѕРЅ РќР• Р·Р°РїСѓСЃРєР°РµС‚ вЂ” РёРј СѓРїСЂР°РІР»СЏРµС‚ СЃРєСЂРёРїС‚, РєРѕС‚РѕСЂС‹Р№ РµРіРѕ Р·Р°СЃРїР°РІРЅРёР»
+                // (С‚Р°Рє РїСЂРѕС‰Рµ РґР»СЏ РїСѓР»СЊ/РІСЂР°РіРѕРІ: РѕРґРёРЅ "РјРµРЅРµРґР¶РµСЂ" РґРІРёРіР°РµС‚ Рё СѓРґР°Р»СЏРµС‚ РёС… РїРѕ РёРјРµРЅРё).
                 lua_pushstring(LL, "Instantiate");
                 lua_pushlightuserdata(LL, (void*)&objects);
                 lua_pushcclosure(LL, [](lua_State* L)->int{
@@ -812,8 +917,8 @@ int main(int argc, char** argv)
                         scene.registry.AddComponent<VE::RigidbodyComponent>(clone.ecsID, rb);
                         if (scene.registry.HasComponent<VE::ColliderComponent>(tmpl->ecsID))
                             scene.registry.AddComponent<VE::ColliderComponent>(clone.ecsID, scene.registry.GetComponent<VE::ColliderComponent>(tmpl->ecsID));
-                        // Само тело Bullet создастся автоматически на следующем Physics::Step()
-                        // (SyncToBullet сам находит все Entity с Rigidbody+Collider+Transform).
+                        // Р°РјРѕ С‚РµР»Рѕ Bullet СЃРѕР·РґР°СЃС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РЅР° СЃР»РµРґСѓСЋС‰РµРј Physics::Step()
+                        // (SyncToBullet СЃР°Рј РЅР°С…РѕРґРёС‚ РІСЃРµ Entity СЃ Rigidbody+Collider+Transform).
                     }
                     objs->push_back(clone);
                     lua_pushstring(L, clone.name.c_str());
@@ -821,10 +926,10 @@ int main(int argc, char** argv)
                 }, 1);
                 lua_settable(LL, -3);
 
-                // ── Scene.InstantiatePrefab(path, x,y,z) -> newName | nil ──
-                // Как Instantiate(), но грузит объект из .veprefab файла на диске —
-                // работает даже если такого объекта нет в текущей сцене (в отличие
-                // от Instantiate, который клонирует объект, уже стоящий в сцене).
+                // в”Ђв”Ђ Scene.InstantiatePrefab(path, x,y,z) -> newName | nil в”Ђв”Ђ
+                // РљР°Рє Instantiate(), РЅРѕ РіСЂСѓР·РёС‚ РѕР±СЉРµРєС‚ РёР· .veprefab С„Р°Р№Р»Р° РЅР° РґРёСЃРєРµ вЂ”
+                // СЂР°Р±РѕС‚Р°РµС‚ РґР°Р¶Рµ РµСЃР»Рё С‚Р°РєРѕРіРѕ РѕР±СЉРµРєС‚Р° РЅРµС‚ РІ С‚РµРєСѓС‰РµР№ СЃС†РµРЅРµ (РІ РѕС‚Р»РёС‡РёРµ
+                // РѕС‚ Instantiate, РєРѕС‚РѕСЂС‹Р№ РєР»РѕРЅРёСЂСѓРµС‚ РѕР±СЉРµРєС‚, СѓР¶Рµ СЃС‚РѕСЏС‰РёР№ РІ СЃС†РµРЅРµ).
                 lua_pushstring(LL, "InstantiatePrefab");
                 lua_pushlightuserdata(LL, (void*)&objects);
                 lua_pushcclosure(LL, [](lua_State* L)->int{
@@ -861,8 +966,8 @@ int main(int argc, char** argv)
                 }, 1);
                 lua_settable(LL, -3);
 
-                // ── Scene.InstantiatePrimitive("Sphere", x,y,z, scale) -> newName ──
-                // Быстрый спавн без заранее подготовленного шаблона (напр. пуля-заглушка сферой).
+                // в”Ђв”Ђ Scene.InstantiatePrimitive("Sphere", x,y,z, scale) -> newName в”Ђв”Ђ
+                // Р‘С‹СЃС‚СЂС‹Р№ СЃРїР°РІРЅ Р±РµР· Р·Р°СЂР°РЅРµРµ РїРѕРґРіРѕС‚РѕРІР»РµРЅРЅРѕРіРѕ С€Р°Р±Р»РѕРЅР° (РЅР°РїСЂ. РїСѓР»СЏ-Р·Р°РіР»СѓС€РєР° СЃС„РµСЂРѕР№).
                 lua_pushstring(LL, "InstantiatePrimitive");
                 lua_pushlightuserdata(LL, (void*)&objects);
                 lua_pushcclosure(LL, [](lua_State* L)->int{
@@ -893,8 +998,8 @@ int main(int argc, char** argv)
                 }, 1);
                 lua_settable(LL, -3);
 
-                // ── Scene.Destroy(name) -> bool ──
-                // Удаляет объект из сцены прямо во время игры (пуля улетела/попала, враг умер и т.п.)
+                // в”Ђв”Ђ Scene.Destroy(name) -> bool в”Ђв”Ђ
+                // РЈРґР°Р»СЏРµС‚ РѕР±СЉРµРєС‚ РёР· СЃС†РµРЅС‹ РїСЂСЏРјРѕ РІРѕ РІСЂРµРјСЏ РёРіСЂС‹ (РїСѓР»СЏ СѓР»РµС‚РµР»Р°/РїРѕРїР°Р»Р°, РІСЂР°Рі СѓРјРµСЂ Рё С‚.Рї.)
                 lua_pushstring(LL, "Destroy");
                 lua_pushlightuserdata(LL, (void*)&objects);
                 lua_pushcclosure(LL, [](lua_State* L)->int{
@@ -915,9 +1020,9 @@ int main(int argc, char** argv)
                 }, 1);
                 lua_settable(LL, -3);
 
-                // ── Scene.SetCamera(name) -> bool ──
-                // Делает камеру с этим именем активной (isPrimary=true), остальные сцены-камеры
-                // становятся неактивными — тот же флаг, что и переключение камеры в редакторе.
+                // в”Ђв”Ђ Scene.SetCamera(name) -> bool в”Ђв”Ђ
+                // Р”РµР»Р°РµС‚ РєР°РјРµСЂСѓ СЃ СЌС‚РёРј РёРјРµРЅРµРј Р°РєС‚РёРІРЅРѕР№ (isPrimary=true), РѕСЃС‚Р°Р»СЊРЅС‹Рµ СЃС†РµРЅС‹-РєР°РјРµСЂС‹
+                // СЃС‚Р°РЅРѕРІСЏС‚СЃСЏ РЅРµР°РєС‚РёРІРЅС‹РјРё вЂ” С‚РѕС‚ Р¶Рµ С„Р»Р°Рі, С‡С‚Рѕ Рё РїРµСЂРµРєР»СЋС‡РµРЅРёРµ РєР°РјРµСЂС‹ РІ СЂРµРґР°РєС‚РѕСЂРµ.
                 lua_pushstring(LL, "SetCamera");
                 lua_pushlightuserdata(LL, (void*)&sceneCameras);
                 lua_pushcclosure(LL, [](lua_State* L)->int{
@@ -937,7 +1042,7 @@ int main(int argc, char** argv)
                 lua_setglobal(LL, "Scene");
             }
 
-            // ── Environment API: время суток и туман из Lua ──
+            // в”Ђв”Ђ Environment API: РІСЂРµРјСЏ СЃСѓС‚РѕРє Рё С‚СѓРјР°РЅ РёР· Lua в”Ђв”Ђ
             // Environment.SetTimeOfDay(hours) / GetTimeOfDay()
             // Environment.SetFog(density, r, g, b)
             {
@@ -976,8 +1081,8 @@ int main(int argc, char** argv)
                 lua_setglobal(LL, "Environment");
             }
 
-            // ── Animation API: управление проигрыванием анимации СВОЕГО объекта ──
-            // Animation.Play("ИмяКлипа") или Animation.Play(0) по индексу
+            // в”Ђв”Ђ Animation API: СѓРїСЂР°РІР»РµРЅРёРµ РїСЂРѕРёРіСЂС‹РІР°РЅРёРµРј Р°РЅРёРјР°С†РёРё РЎР’РћР•Р“Рћ РѕР±СЉРµРєС‚Р° в”Ђв”Ђ
+            // Animation.Play("РРјСЏРљР»РёРїР°") РёР»Рё Animation.Play(0) РїРѕ РёРЅРґРµРєСЃСѓ
             // Animation.Stop() / Animation.SetLoop(true/false) / Animation.IsPlaying()
             {
                 lua_State* LL = luaInst->L;
@@ -1040,8 +1145,8 @@ int main(int argc, char** argv)
                     return 1;
                 });
 
-                // PlayAnimation / StopAnimation — то же самое, что Play/Stop выше (алиасы под
-                // именами, которые обычно ожидают в остальных движках/уроках).
+                // PlayAnimation / StopAnimation вЂ” С‚Рѕ Р¶Рµ СЃР°РјРѕРµ, С‡С‚Рѕ Play/Stop РІС‹С€Рµ (Р°Р»РёР°СЃС‹ РїРѕРґ
+                // РёРјРµРЅР°РјРё, РєРѕС‚РѕСЂС‹Рµ РѕР±С‹С‡РЅРѕ РѕР¶РёРґР°СЋС‚ РІ РѕСЃС‚Р°Р»СЊРЅС‹С… РґРІРёР¶РєР°С…/СѓСЂРѕРєР°С…).
                 pushSelfFn("PlayAnimation", [](lua_State* L)->int{
                     VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     extern std::vector<SceneObject>* g_LuaObjectsPtr;
@@ -1071,8 +1176,8 @@ int main(int argc, char** argv)
                     return 0;
                 });
 
-                // Animation.SetAnimationSpeed(speed) — множитель скорости проигрывания
-                // (1.0 = обычная скорость, 2.0 = вдвое быстрее, 0.5 = замедленно, отрицательное — назад).
+                // Animation.SetAnimationSpeed(speed) вЂ” РјРЅРѕР¶РёС‚РµР»СЊ СЃРєРѕСЂРѕСЃС‚Рё РїСЂРѕРёРіСЂС‹РІР°РЅРёСЏ
+                // (1.0 = РѕР±С‹С‡РЅР°СЏ СЃРєРѕСЂРѕСЃС‚СЊ, 2.0 = РІРґРІРѕРµ Р±С‹СЃС‚СЂРµРµ, 0.5 = Р·Р°РјРµРґР»РµРЅРЅРѕ, РѕС‚СЂРёС†Р°С‚РµР»СЊРЅРѕРµ вЂ” РЅР°Р·Р°Рґ).
                 pushSelfFn("SetAnimationSpeed", [](lua_State* L)->int{
                     VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     float speed=(float)luaL_optnumber(L,1,1.0);
@@ -1100,6 +1205,7 @@ int main(int argc, char** argv)
                     obj.pos.x=luaInst->objX;obj.pos.y=luaInst->objY;obj.pos.z=luaInst->objZ;
                     luaInst->started=true;
                     obj.luaInstances.push_back(luaInst);
+        UILua::Register(obj.luaInstances.back()->L);
                 } else {
                     logError("Lua load failed: "+obj.name+" ("+fs::path(scriptPath).filename().string()+")");
                 }
@@ -1109,7 +1215,7 @@ int main(int argc, char** argv)
         logInfo("Play");
     };
 
-    // ── Player mode: сразу грузим сцену, Play включится автоматически после загрузки ──
+    // в”Ђв”Ђ Player mode: СЃСЂР°Р·Сѓ РіСЂСѓР·РёРј СЃС†РµРЅСѓ, Play РІРєР»СЋС‡РёС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РїРѕСЃР»Рµ Р·Р°РіСЂСѓР·РєРё в”Ђв”Ђ
     if (g_PlayerMode) {
         VE::SceneManager::Get().RequestLoad(g_PlayerScenePath);
         logInfo("Player mode: launching "+g_PlayerScenePath);
@@ -1117,17 +1223,17 @@ int main(int argc, char** argv)
 
     const char* typeNames[]={"Cube","Sphere","Cylinder","Pyramid","Capsule","Plane","Model","Empty"};
     static float hierW=240.f, inspW=280.f, bottomH=190.f;
-    const float sideW=48.f, toolH=38.f;
+    const float sideW=54.f, toolH=44.f;
 
     while(!window->ShouldClose())
     {
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
-        // ── Продвигаем время скелетной анимации (играет и в редакторе, для превью) ──
+        // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
         for(auto& obj:objects){
             if(obj.animPlaying && obj.model && obj.model->hasSkeleton && obj.animIndex>=0)
                 obj.animTime += deltaTime * obj.animSpeed;
         }
-        // ── Кастомная покадровая анимация — двигает/крутит/масштабирует ЛЮБОЙ объект ──
+        // в”Ђв”Ђ РљР°СЃС‚РѕРјРЅР°СЏ РїРѕРєР°РґСЂРѕРІР°СЏ Р°РЅРёРјР°С†РёСЏ вЂ” РґРІРёРіР°РµС‚/РєСЂСѓС‚РёС‚/РјР°СЃС€С‚Р°Р±РёСЂСѓРµС‚ Р›Р®Р‘РћР™ РѕР±СЉРµРєС‚ в”Ђв”Ђ
         for(auto& obj:objects){
             if(!obj.customAnimPlaying || obj.customClipIndex<0 || obj.customClipIndex>=(int)obj.customClips.size()) continue;
             auto& clip = obj.customClips[obj.customClipIndex];
@@ -1140,7 +1246,7 @@ int main(int argc, char** argv)
             }
             SampleObjectClip(clip, obj.customAnimTime, obj.pos, obj.rot, obj.scale);
         }
-        // ── Автосохранение сцены (настраивается в Preferences) ──
+        // в”Ђв”Ђ РђРІС‚РѕСЃРѕС…СЂР°РЅРµРЅРёРµ СЃС†РµРЅС‹ (РЅР°СЃС‚СЂР°РёРІР°РµС‚СЃСЏ РІ Preferences) в”Ђв”Ђ
         {
             static float autosaveAccum=0.f;
             autosaveAccum += deltaTime;
@@ -1151,25 +1257,27 @@ int main(int argc, char** argv)
                 logInfo("Autosaved: "+currentScenePath);
             }
         }
-        // ── Scene Manager: проверяем отложенную загрузку сцены ──
+        // в”Ђв”Ђ Scene Manager: РїСЂРѕРІРµСЂСЏРµРј РѕС‚Р»РѕР¶РµРЅРЅСѓСЋ Р·Р°РіСЂСѓР·РєСѓ СЃС†РµРЅС‹ в”Ђв”Ђ
         if(VE::SceneManager::Get().Tick()) continue;
         if (g_PlayerAutoPlayPending) { g_PlayerAutoPlayPending=false; StartPlay(); }
         VE::HUD::Get().BeginFrame();
-        g_DragHoverObj = -1; // сброс каждый кадр, обновляется в drop target
+    UILua::TickPopup();
+        g_DragHoverObj = -1; // СЃР±СЂРѕСЃ РєР°Р¶РґС‹Р№ РєР°РґСЂ, РѕР±РЅРѕРІР»СЏРµС‚СЃСЏ РІ drop target
         float menuH=20.f;
         float viewH=io.DisplaySize.y-menuH-bottomH-toolH;
         float vpW=io.DisplaySize.x-sideW-hierW-inspW;
 
+if (!isPlaying) {
         if(!sceneCameras.empty()){
             for(auto& sc:sceneCameras){if(sc.isPrimary){
                 if(sc.followTargetIndex>=0&&sc.followTargetIndex<(int)objects.size()&&isPlaying){
-                    // Камера "follow" игрока (как в Unity child-camera) —
-                    // позиция = followTarget.pos + offset, поворот в World Y =
-                    // followTarget.rot.y (управляется Lua-скриптом игрока),
-                    // pitch берётся из followTarget.lookPitch
+                    // РљР°РјРµСЂР° "follow" РёРіСЂРѕРєР° (РєР°Рє РІ Unity child-camera) вЂ”
+                    // РїРѕР·РёС†РёСЏ = followTarget.pos + offset, РїРѕРІРѕСЂРѕС‚ РІ World Y =
+                    // followTarget.rot.y (СѓРїСЂР°РІР»СЏРµС‚СЃСЏ Lua-СЃРєСЂРёРїС‚РѕРј РёРіСЂРѕРєР°),
+                    // pitch Р±РµСЂС‘С‚СЃСЏ РёР· followTarget.lookPitch
                     auto& target=objects[sc.followTargetIndex];
                     gameCamera.Position=target.pos+sc.followOffset;
-                    gameCamera.Yaw=target.rot.y-90.f;   // -90 коррекция под Yaw=0 смотрящий по -Z
+                    gameCamera.Yaw=target.rot.y-90.f;   // -90 РєРѕСЂСЂРµРєС†РёСЏ РїРѕРґ Yaw=0 СЃРјРѕС‚СЂСЏС‰РёР№ РїРѕ -Z
                     gameCamera.Pitch=target.lookPitch;
                     gameCamera.UpdateVectors();
                 } else {
@@ -1178,6 +1286,21 @@ int main(int argc, char** argv)
                 break;
             }}
         }
+} // end !isPlaying camera sync
+if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
+    for (auto& sc:sceneCameras) if (sc.isPrimary) {
+        if (sc.followTargetIndex>=0 && sc.followTargetIndex<(int)objects.size()) {
+            auto& t=objects[sc.followTargetIndex];
+            gameCamera.Position=t.pos+sc.followOffset;
+            gameCamera.Yaw=t.rot.y-90.f;
+            gameCamera.Pitch=t.lookPitch;
+            gameCamera.UpdateVectors();
+        } else { gameCamera.Position=sc.pos; }
+        break;
+    }
+    gameCameraInitialized = true;
+}
+    // В Play gameCamera управляется CharacterController/Lua — НЕ перезаписываем её
 
         if(!io.WantCaptureKeyboard){
             if(glfwGetKey(native,GLFW_KEY_W)==GLFW_PRESS&&rightMouseDown) camera.ProcessKeyboard(0,deltaTime);
@@ -1223,11 +1346,11 @@ int main(int argc, char** argv)
         float gs=dist*0.16f;
 
         glm::mat4 view=camera.GetViewMatrix();
-        // Пересчитываем aspect ratio из текущего размера viewport
+        // РџРµСЂРµСЃС‡РёС‚С‹РІР°РµРј aspect ratio РёР· С‚РµРєСѓС‰РµРіРѕ СЂР°Р·РјРµСЂР° viewport
         float vpAspect = (g_VpSize.x > 1 && g_VpSize.y > 1) ? (g_VpSize.x / g_VpSize.y) : (vpW/viewH);
         glm::mat4 proj=camera.GetProjectionMatrix(vpAspect);
 
-        // ── Рисование маски кистью — приоритет над обычным выделением/гизмо, пока активен режим ──
+        // в”Ђв”Ђ Р РёСЃРѕРІР°РЅРёРµ РјР°СЃРєРё РєРёСЃС‚СЊСЋ вЂ” РїСЂРёРѕСЂРёС‚РµС‚ РЅР°Рґ РѕР±С‹С‡РЅС‹Рј РІС‹РґРµР»РµРЅРёРµРј/РіРёР·РјРѕ, РїРѕРєР° Р°РєС‚РёРІРµРЅ СЂРµР¶РёРј в”Ђв”Ђ
         if (g_EditorMode==EditorMode::PaintMask && leftDown && selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
             double lx=mouseX-g_VpPos.x, ly=mouseY-g_VpPos.y;
             int vw=(int)g_VpSize.x, vh=(int)g_VpSize.y;
@@ -1237,7 +1360,7 @@ int main(int argc, char** argv)
                 if (RaycastObjectUV(ray, objects[sel], uv)) {
                     auto& obj = objects[sel];
                     if (!obj.materials.empty() && obj.materials[0].maskPixelSize>0) {
-                        bool restoreLayer2 = g_BrushPaintMode != ImGui::GetIO().KeyShift; // тулбар задаёт режим, Shift временно инвертирует
+                        bool restoreLayer2 = g_BrushPaintMode != ImGui::GetIO().KeyShift; // С‚СѓР»Р±Р°СЂ Р·Р°РґР°С‘С‚ СЂРµР¶РёРј, Shift РІСЂРµРјРµРЅРЅРѕ РёРЅРІРµСЂС‚РёСЂСѓРµС‚
                         StampBrush(obj.materials[0], uv, g_BrushRadius, restoreLayer2);
                     }
                 }
@@ -1262,7 +1385,7 @@ int main(int argc, char** argv)
                     if(hitAxis!=GizmoAxis::None){
                         hitGizmo=true;dragAxis=hitAxis;dragStartPos=selPos;
                         if(selType==SelectionType::Object&&sel>=0){dragStartRot=objects[sel].rot;dragStartScale=objects[sel].scale;}
-                        g_UndoDragObjIndex=sel; g_UndoDragSelType=selType; // Undo/Redo: запоминаем что тащим
+                        g_UndoDragObjIndex=sel; g_UndoDragSelType=selType; // Undo/Redo: Р·Р°РїРѕРјРёРЅР°РµРј С‡С‚Рѕ С‚Р°С‰РёРј
                         glm::vec3 axDir=axes[(int)hitAxis-1];
                         glm::vec3 plN=glm::normalize(glm::cross(axDir,glm::cross(camera.Front,axDir)));
                         float t=rayPlaneT(ray,plN,selPos);dragStartHit=t>0?ray.origin+ray.dir*t:selPos;
@@ -1320,7 +1443,7 @@ int main(int argc, char** argv)
                 }
             }
         }
-        // ── Undo/Redo: драг гизмо только что закончился — записываем "было/стало" ──
+        // в”Ђв”Ђ Undo/Redo: РґСЂР°Рі РіРёР·РјРѕ С‚РѕР»СЊРєРѕ С‡С‚Рѕ Р·Р°РєРѕРЅС‡РёР»СЃСЏ вЂ” Р·Р°РїРёСЃС‹РІР°РµРј "Р±С‹Р»Рѕ/СЃС‚Р°Р»Рѕ" в”Ђв”Ђ
         if (g_PrevDragAxis != GizmoAxis::None && dragAxis == GizmoAxis::None &&
             g_UndoDragSelType == SelectionType::Object &&
             g_UndoDragObjIndex >= 0 && g_UndoDragObjIndex < (int)objects.size())
@@ -1342,13 +1465,77 @@ int main(int argc, char** argv)
                 VE::UndoSystem::Get().Push(std::make_unique<VE::PropertyChangeCommand<glm::vec3>>(setter, before, after, objects[idx].name));
         }
         g_PrevDragAxis = dragAxis;
+
+        // ── Parenting: дети следуют за родителем ──
+        static std::vector<glm::vec3> prevPos;
+        if ((int)prevPos.size()!=(int)objects.size()) { prevPos.assign(objects.size(), glm::vec3(0)); }
+        if (!g_SkipPropagate) {
+            for (int pi=0; pi<(int)objects.size(); pi++) {
+                glm::vec3 d = objects[pi].pos - prevPos[pi];
+                if (glm::length(d) > 1e-6f && glm::length(d) < 5.f) {
+                    for (int ci2=0; ci2<(int)objects.size(); ci2++) if (objects[ci2].parentIndex==pi) objects[ci2].pos += d;
+                }
+            }
+        }
+        g_SkipPropagate=false;
+        for (int pi=0; pi<(int)objects.size(); pi++) prevPos[pi]=objects[pi].pos;
         
         } // if (g_EditorMode==EditorMode::Object)
         leftClickThisFrame=false;
 
         if(isPlaying&&!isPaused){
+    if (isPlaying && !isPaused) {
+        for (int oi=0; oi<(int)objects.size(); oi++) {
+            if (!scene.registry.HasComponent<VE::CharacterControllerComponent>(objects[oi].ecsID)) {
+                for (auto& n : g_CcNames) if (n==objects[oi].name) { scene.registry.AddComponent<VE::CharacterControllerComponent>(objects[oi].ecsID); break; }
+            }
+            if (scene.registry.HasComponent<VE::CharacterControllerComponent>(objects[oi].ecsID)) {
+                auto& cc = scene.registry.GetComponent<VE::CharacterControllerComponent>(objects[oi].ecsID);
+                cc.targetObjectIndex = oi;
+                
+                // Управление WASD + Space + Shift
+                glm::vec3 moveDir(0);
+                float speed = cc.controller.Speed;
+                if (glfwGetKey(native, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) speed = cc.controller.RunSpeed;
+                
+                glm::vec3 forward = glm::normalize(glm::vec3(gameCamera.Front.x, 0, gameCamera.Front.z));
+                glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0,1,0)));
+                
+                if (glfwGetKey(native, GLFW_KEY_W) == GLFW_PRESS) moveDir += forward;
+                if (glfwGetKey(native, GLFW_KEY_S) == GLFW_PRESS) moveDir -= forward;
+                if (glfwGetKey(native, GLFW_KEY_A) == GLFW_PRESS) moveDir -= right;
+                if (glfwGetKey(native, GLFW_KEY_D) == GLFW_PRESS) moveDir += right;
+                
+                if (glm::length(moveDir) > 0.001f) {
+                    moveDir = glm::normalize(moveDir) * speed;
+                }
+                
+                if (glfwGetKey(native, GLFW_KEY_SPACE) == GLFW_PRESS) cc.controller.Jump();
+                
+                // Физика + коллизии
+                std::vector<VE::CCCollider> ccols;
+                for (auto& oo : objects) { if (oo.ecsID!=objects[oi].ecsID && scene.registry.HasComponent<VE::ColliderComponent>(oo.ecsID)) { VE::CCCollider c2; c2.pos=oo.pos; c2.col=scene.registry.GetComponent<VE::ColliderComponent>(oo.ecsID); ccols.push_back(c2); } }
+                g_HasCtrl=true;
+                cc.controller.Move(moveDir, deltaTime, ccols);
+                
+                // Обновляем позицию объекта
+                objects[oi].pos = cc.controller.Position;
+                scene.GetTransform(objects[oi].ecsID).Position = objects[oi].pos;
+                
+                // Камера следует за контроллером
+                gameCamera.Position = cc.controller.Position + glm::vec3(0, cc.controller.Height * 0.9f, 0);
+                
+                // Захват мыши в FPS-режиме
+                break;
+            }
+        }
+        // Если нет контроллера — вернуть курсор
+        bool hasAnyCtrl = false;
+        for (auto& o : objects) if (scene.registry.HasComponent<VE::CharacterControllerComponent>(o.ecsID)) { hasAnyCtrl=true; break; }
+        if (!hasAnyCtrl) glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
             VE::Physics::Get().Step(scene.registry,deltaTime);
-            VE::ParticleSystem::Get().Update(deltaTime); // частицы двигаются только пока игра играет
+            VE::ParticleSystem::Get().Update(deltaTime); // С‡Р°СЃС‚РёС†С‹ РґРІРёРіР°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ РїРѕРєР° РёРіСЂР° РёРіСЂР°РµС‚
             for(auto& obj:objects){
                 if(obj.hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(obj.ecsID)){
                     auto& tr=scene.GetTransform(obj.ecsID);
@@ -1374,7 +1561,7 @@ int main(int argc, char** argv)
                     obj.color.r=li->objR;obj.color.g=li->objG;obj.color.b=li->objB;
                     obj.lookPitch=li->objLookPitch;
                 }
-                // позиция и поворот могли измениться из Lua — применить их и к Bullet rigidbody
+                // РїРѕР·РёС†РёСЏ Рё РїРѕРІРѕСЂРѕС‚ РјРѕРіР»Рё РёР·РјРµРЅРёС‚СЊСЃСЏ РёР· Lua вЂ” РїСЂРёРјРµРЅРёС‚СЊ РёС… Рё Рє Bullet rigidbody
                 if(obj.hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(obj.ecsID)){
                     auto& tr=scene.GetTransform(obj.ecsID);
                     tr.Position=obj.pos;
@@ -1382,8 +1569,8 @@ int main(int argc, char** argv)
                 }
             }
 
-            // ── Collision / Trigger callbacks ──
-            // EntityID -> SceneObject* для быстрого поиска при диспетчеризации
+            // в”Ђв”Ђ Collision / Trigger callbacks в”Ђв”Ђ
+            // EntityID -> SceneObject* РґР»СЏ Р±С‹СЃС‚СЂРѕРіРѕ РїРѕРёСЃРєР° РїСЂРё РґРёСЃРїРµС‚С‡РµСЂРёР·Р°С†РёРё
             auto findObjByEntity=[&](VE::EntityID id)->SceneObject*{
                 for(auto& o:objects) if(o.ecsID==id) return &o;
                 return nullptr;
@@ -1412,11 +1599,11 @@ int main(int argc, char** argv)
             }
         }
 
-        glDisable(GL_SCISSOR_TEST); // ImGui мог оставить scissor включённым с маленьким прямоугольником прошлого кадра
+        glDisable(GL_SCISSOR_TEST); // ImGui РјРѕРі РѕСЃС‚Р°РІРёС‚СЊ scissor РІРєР»СЋС‡С‘РЅРЅС‹Рј СЃ РјР°Р»РµРЅСЊРєРёРј РїСЂСЏРјРѕСѓРіРѕР»СЊРЅРёРєРѕРј РїСЂРѕС€Р»РѕРіРѕ РєР°РґСЂР°
 
-        // ════════════════════════════════════════════════════════════════
-        // Проверяем, изменился ли размер Viewport, и пересоздаём FBO если нужно
-        // ════════════════════════════════════════════════════════════════
+        // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+        // РџСЂРѕРІРµСЂСЏРµРј, РёР·РјРµРЅРёР»СЃСЏ Р»Рё СЂР°Р·РјРµСЂ Viewport, Рё РїРµСЂРµСЃРѕР·РґР°С‘Рј FBO РµСЃР»Рё РЅСѓР¶РЅРѕ
+        // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
         int vpWidth = (int)g_VpSize.x;
         int vpHeight = (int)g_VpSize.y;
         if (vpWidth > 0 && vpHeight > 0 && (vpWidth != g_VpLastWidth || vpHeight != g_VpLastHeight)) {
@@ -1436,7 +1623,7 @@ int main(int argc, char** argv)
         glBindFramebuffer(GL_READ_FRAMEBUFFER,sceneMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,sceneHDRFBO);
         glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
         ApplyBloomAndTonemap(sceneHDRTex, sceneFBO, (int)g_VpSize.x, (int)g_VpSize.y);
-        // ── Своё же тело не должно быть видно от первого лица (как в Unity/Godot) ──
+        // в”Ђв”Ђ РЎРІРѕС‘ Р¶Рµ С‚РµР»Рѕ РЅРµ РґРѕР»Р¶РЅРѕ Р±С‹С‚СЊ РІРёРґРЅРѕ РѕС‚ РїРµСЂРІРѕРіРѕ Р»РёС†Р° (РєР°Рє РІ Unity/Godot) в”Ђв”Ђ
         int fpExcludeIdx=-1;
         for(auto& sc:sceneCameras){
             if(sc.isPrimary && sc.followTargetIndex>=0 && sc.followTargetIndex<(int)objects.size()){
@@ -1453,12 +1640,13 @@ int main(int argc, char** argv)
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
+    VE2D::RenderFrame(sprites2D, (int)g_VpSize.x, (int)g_VpSize.y);
         ImGui::NewFrame();
         menuH=ImGui::GetFrameHeight();
 
-// ═══════════════════════════════════════════════════════
-//   ВИЗУАЛЬНАЯ ТЕМА — чёрный + фиолетовый (Unity6/UE5)
-// ═══════════════════════════════════════════════════════
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+//   Р’РР—РЈРђР›Р¬РќРђРЇ РўР•РњРђ вЂ” С‡С‘СЂРЅС‹Р№ + С„РёРѕР»РµС‚РѕРІС‹Р№ (Unity6/UE5)
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 static bool themeApplied = false;
 if (!themeApplied) {
     themeApplied = true;
@@ -1481,7 +1669,7 @@ if (!themeApplied) {
     st.GrabMinSize       = 6.f;
 
     ImVec4* c = st.Colors;
-    // ── CONCEPT COLORS: #16181c base, #1e2024 panels, #2563eb accent ──
+    // в”Ђв”Ђ CONCEPT COLORS: #16181c base, #1e2024 panels, #2563eb accent в”Ђв”Ђ
     // Backgrounds
     c[ImGuiCol_WindowBg]          = ImVec4(0.086f,0.094f,0.106f,1.f); // #161820
     c[ImGuiCol_ChildBg]           = ImVec4(0.086f,0.094f,0.106f,1.f);
@@ -1508,7 +1696,7 @@ if (!themeApplied) {
     c[ImGuiCol_CheckMark]         = ImVec4(0.700f,0.720f,0.760f,1.f);
     c[ImGuiCol_SliderGrab]        = ImVec4(0.300f,0.320f,0.360f,1.f);
     c[ImGuiCol_SliderGrabActive]  = ImVec4(0.500f,0.520f,0.560f,1.f);
-    // Buttons — subtle, like concept
+    // Buttons вЂ” subtle, like concept
     c[ImGuiCol_Button]            = ImVec4(0.137f,0.149f,0.169f,1.f);
     c[ImGuiCol_ButtonHovered]     = ImVec4(0.180f,0.196f,0.220f,1.f);
     c[ImGuiCol_ButtonActive]      = ImVec4(0.200f,0.220f,0.250f,1.f);
@@ -1556,22 +1744,22 @@ const ImVec4 COL_RED_X       = ImVec4(0.95f, 0.35f, 0.35f, 1.f);
 const ImVec4 COL_GREEN_Y     = ImVec4(0.35f, 0.90f, 0.40f, 1.f);
 const ImVec4 COL_BLUE_Z      = ImVec4(0.35f, 0.60f, 1.00f, 1.f);
 
-// ── Хелпер — горизонтальная линия с отступами ──
+// в”Ђв”Ђ РҐРµР»РїРµСЂ вЂ” РіРѕСЂРёР·РѕРЅС‚Р°Р»СЊРЅР°СЏ Р»РёРЅРёСЏ СЃ РѕС‚СЃС‚СѓРїР°РјРё в”Ђв”Ђ
 auto HRule = [&](){
     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.176f,0.188f,0.212f,1.f));
     ImGui::Separator();
     ImGui::PopStyleColor();
 };
 
-// ── Хелпер — кнопка-переключатель с подсветкой акцентом ──
+// в”Ђв”Ђ РҐРµР»РїРµСЂ вЂ” РєРЅРѕРїРєР°-РїРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ СЃ РїРѕРґСЃРІРµС‚РєРѕР№ Р°РєС†РµРЅС‚РѕРј в”Ђв”Ђ
 auto ToggleBtn = [&](const char* lbl, bool active, ImVec2 sz) -> bool {
     if (active) {
         ImGui::PushStyleColor(ImGuiCol_Button,        g_Prefs.accentColor);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(g_Prefs.accentColor.x+0.10f,g_Prefs.accentColor.y+0.08f,g_Prefs.accentColor.z+0.15f,1.f));
         ImGui::PushStyleColor(ImGuiCol_Text,          COL_ACCENT_HOV);
     } else {
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.12f,0.11f,0.16f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f,0.14f,0.30f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.12f,0.13f,0.14f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f,0.21f,0.24f,1.f));
         ImGui::PushStyleColor(ImGuiCol_Text,          COL_DIM);
     }
     bool clicked = ImGui::Button(lbl, sz);
@@ -1581,7 +1769,7 @@ auto ToggleBtn = [&](const char* lbl, bool active, ImVec2 sz) -> bool {
 
 if (!g_PlayerMode) {
 if (ImGui::BeginMainMenuBar()) {
-    // ── Logo ──
+    // в”Ђв”Ђ Logo в”Ђв”Ђ
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.88f,0.89f,0.92f,1.f));
     ImGui::Text("  VE  VisualEngine");
     ImGui::PopStyleColor();
@@ -1596,9 +1784,10 @@ if (ImGui::BeginMainMenuBar()) {
             std::string sp=projectRoot+"\\Assets\\Scenes\\scene.vescene";
             if(fs::exists(sp)){
                 LoadScene(sp,objects,lights,sceneCameras,sel,selType);
-                VE::UndoSystem::Get().Clear(); // новая сцена — старая история отмены больше не валидна
+                VE::UndoSystem::Get().Clear(); // РЅРѕРІР°СЏ СЃС†РµРЅР° вЂ” СЃС‚Р°СЂР°СЏ РёСЃС‚РѕСЂРёСЏ РѕС‚РјРµРЅС‹ Р±РѕР»СЊС€Рµ РЅРµ РІР°Р»РёРґРЅР°
                 currentScenePath=sp;
                 logInfo("Scene loaded: "+sp);
+        g_SkipPropagate=true;
             } else logWarn("No scene file found: "+sp);
         }
         if (ImGui::MenuItem("Save Scene", "Ctrl+S")) {
@@ -1662,6 +1851,11 @@ if (ImGui::BeginMainMenuBar()) {
             lights.push_back(l); selLight=(int)lights.size()-1; selType=SelectionType::Light; logInfo("Created "+l.name);
         }
         if (ImGui::MenuItem("Camera")) {
+            if (ImGui::MenuItem("2D Sprite")) { Sprite2D s; s.name="Sprite2D_"+std::to_string((int)sprites2D.size()+1); sprites2D.push_back(s); selSprite2D=(int)sprites2D.size()-1; logInfo("Created "+s.name); }
+            if (ImGui::MenuItem("UI Image")) { UIElement u; u.type=UIElement::Type::Image; u.name="UIImage_"+std::to_string((int)uiElements.size()+1); u.size=glm::vec2(200,200); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            if (ImGui::MenuItem("UI Text")) { UIElement u; u.type=UIElement::Type::Text; u.name="UIText_"+std::to_string((int)uiElements.size()+1); u.text="New Text"; u.size=glm::vec2(200,30); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            if (ImGui::MenuItem("UI Button")) { UIElement u; u.type=UIElement::Type::Button; u.name="UIButton_"+std::to_string((int)uiElements.size()+1); u.text="Button"; uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+        if (ImGui::MenuItem("UI Frame")) { UIElement u; u.type=UIElement::Type::Frame; u.name="UIFrame_"+std::to_string((int)uiElements.size()+1); u.size=glm::vec2(300,200); u.color=glm::vec4(0.15f,0.16f,0.2f,0.9f); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
             CameraObject cam; cam.name="Camera_"+std::to_string(sceneCameras.size()+1); cam.pos=glm::vec3(0,2,5);
             cam.ecsID=scene.CreateEntity(cam.name); scene.registry.AddComponent<VE::CameraComponent>(cam.ecsID,false);
             sceneCameras.push_back(cam); selCamera=(int)sceneCameras.size()-1; selType=SelectionType::Camera; logInfo("Created "+cam.name);
@@ -1683,7 +1877,7 @@ if (ImGui::BeginMainMenuBar()) {
         ImGui::EndMenu();
     }
 
-    // ── Play / Pause / Stop по центру ──
+    // в”Ђв”Ђ Play / Pause / Stop РїРѕ С†РµРЅС‚СЂСѓ в”Ђв”Ђ
     float mw = ImGui::GetWindowWidth();
     ImGui::SetCursorPosX(mw * 0.5f - 68.f);
 
@@ -1706,7 +1900,12 @@ if (ImGui::BeginMainMenuBar()) {
                 tr.Position=objects[i].pos; tr.Rotation=objects[i].rot; tr.Scale=objects[i].scale;
             }
             for(auto& obj:objects){ obj.luaInstances.clear(); }
-            logInfo("Stop — scene restored");
+            logInfo("Stop вЂ” scene restored");
+        g_SkipPropagate=true;
+        for (auto& o : objects) {
+            for (auto& n : g_CcNames) if (n==o.name && !scene.registry.HasComponent<VE::CharacterControllerComponent>(o.ecsID)) scene.registry.AddComponent<VE::CharacterControllerComponent>(o.ecsID);
+            for (auto& n : g_ColNames) if (n==o.name && !scene.registry.HasComponent<VE::ColliderComponent>(o.ecsID)) { float hy=(o.type==PrimitiveType::Plane)?0.05f:o.scale.y*0.5f; scene.registry.AddComponent<VE::ColliderComponent>(o.ecsID)=VE::ColliderComponent::Box({o.scale.x*0.5f,hy,o.scale.z*0.5f}); }
+        }
         }
         ImGui::PopStyleColor(2);
     } else {
@@ -1721,13 +1920,13 @@ if (ImGui::BeginMainMenuBar()) {
     ImGui::SameLine(0,3);
 
     // Pause
-    ImVec4 pcol = isPaused ? COL_PAUSE : ImVec4(0.15f,0.13f,0.20f,1.f);
+    ImVec4 pcol = isPaused ? COL_PAUSE : ImVec4(0.15f,0.16f,0.18f,1.f);
     ImGui::PushStyleColor(ImGuiCol_Button, pcol);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.90f,.70f,.15f,1.f));
     if (ImGui::Button(" \xe2\x8f\xb8 ", ImVec2(28,22))) isPaused=!isPaused;
     ImGui::PopStyleColor(2);
 
-    // Статистика справа
+    // С‚Р°С‚РёСЃС‚РёРєР° СЃРїСЂР°РІР°
     ImGui::SetCursorPosX(mw - 200.f);
     if (isPlaying) { ImGui::TextColored(COL_PLAY,"  \xe2\x97\x8f "); ImGui::SameLine(0,0); }
     ImGui::TextColored(COL_DIM, "FPS:");
@@ -1741,9 +1940,9 @@ if (ImGui::BeginMainMenuBar()) {
     ImGui::EndMainMenuBar();
 }
 
-// ═══════════════════════════════════════════════════════
-//   DOCKSPACE — область докинга (Hierarchy/Viewport/Inspector/Bottom)
-// ═══════════════════════════════════════════════════════
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+//   DOCKSPACE вЂ” РѕР±Р»Р°СЃС‚СЊ РґРѕРєРёРЅРіР° (Hierarchy/Viewport/Inspector/Bottom)
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 static bool dockLayoutBuilt = false;
 ImGuiID dockspaceId = 0;
 {
@@ -1760,13 +1959,13 @@ ImGuiID dockspaceId = 0;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
     ImGui::Begin("##EditorDockHost", nullptr, dockHostFlags);
-    ImGui::PopStyleVar(3);
 
     dockspaceId = ImGui::GetID("EditorDockSpace");
     ImGui::DockSpace(dockspaceId, ImVec2(0,0), ImGuiDockNodeFlags_None);
     ImGui::End();
+    ImGui::PopStyleVar(3);
 
-    // ── Дефолтный layout строится один раз при первом запуске ──
+    // в”Ђв”Ђ Р”РµС„РѕР»С‚РЅС‹Р№ layout СЃС‚СЂРѕРёС‚СЃСЏ РѕРґРёРЅ СЂР°Р· РїСЂРё РїРµСЂРІРѕРј Р·Р°РїСѓСЃРєРµ в”Ђв”Ђ
     if (!dockLayoutBuilt) {
         dockLayoutBuilt = true;
         ImGui::DockBuilderRemoveNode(dockspaceId);
@@ -1788,9 +1987,9 @@ ImGuiID dockspaceId = 0;
     }
 }
 
-// ═══════════════════════════════════════════════════════
-//   PREFERENCES WINDOW — как Editor Settings в Godot
-// ═══════════════════════════════════════════════════════
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+//   PREFERENCES WINDOW вЂ” РєР°Рє Editor Settings РІ Godot
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 if (g_ShowPreferences) {
     static int prefCat = 0;
     ImGui::SetNextWindowSize(ImVec2(640,440), ImGuiCond_FirstUseEver);
@@ -1835,11 +2034,12 @@ if (g_ShowPreferences) {
         if (ImGui::SliderFloat("Mouse sensitivity", &g_Prefs.camSensitivity, 0.02f, 0.5f, "%.2f"))
             camera.Sensitivity = g_Prefs.camSensitivity;
         ImGui::Checkbox("Invert Y look", &g_Prefs.invertY);
+        ImGui::Checkbox("Show grid", &showGrid);
     }
     else if (prefCat==3) { // Shortcuts
         ImGui::TextColored(ImVec4(0.85f,0.85f,0.90f,1.f), "Shortcuts");
         ImGui::Separator(); ImGui::Spacing();
-        ImGui::TextColored(COL_DIM, "  Read-only for now — remapping coming later");
+        ImGui::TextColored(COL_DIM, "  Read-only for now вЂ” remapping coming later");
         ImGui::Spacing();
         struct SC{const char* action; const char* key;};
         static const SC scs[] = {
@@ -1867,95 +2067,42 @@ if (g_ShowPreferences) {
     ImGui::End();
 }
 
-// ═══════════════════════════════════════════════════════
-//   ENVIRONMENT WINDOW — время суток, облака
-// ═══════════════════════════════════════════════════════
-// ───────────────────────────────────────────────────────
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+//   ENVIRONMENT WINDOW вЂ” РІСЂРµРјСЏ СЃСѓС‚РѕРє, РѕР±Р»Р°РєР°
+// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 //   TOOLBAR
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
 ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, toolH), ImGuiCond_Always);
 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,4));
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.086f,0.094f,0.106f,1.f));
-ImGui::Begin("##toolbar", nullptr,
-    ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
-    ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoTitleBar|
-    ImGuiWindowFlags_NoScrollbar|0);
-
-ImGui::SetCursorPosY(5);
-
-// Gizmo кнопки
-if (ToggleBtn("  Select", gizmoMode==GizmoMode::Select, ImVec2(64,24))) gizmoMode=GizmoMode::Select;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select (Q)");
-ImGui::SameLine(0,2);
-if (ToggleBtn("  Move", gizmoMode==GizmoMode::Move, ImVec2(56,24))) gizmoMode=GizmoMode::Move;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move (W)");
-ImGui::SameLine(0,2);
-if (ToggleBtn("  Rotate", gizmoMode==GizmoMode::Rotate, ImVec2(64,24))) gizmoMode=GizmoMode::Rotate;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotate (E)");
-ImGui::SameLine(0,2);
-if (ToggleBtn("  Scale", gizmoMode==GizmoMode::Scale, ImVec2(58,24))) gizmoMode=GizmoMode::Scale;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scale (R)");
-
-ImGui::SameLine(0,16);
-// Разделитель-линия
-ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.176f,0.188f,0.212f,1.f));
-ImGui::Text("|");
-ImGui::PopStyleColor();
-ImGui::SameLine(0,16);
-
-// Вьюпорт-тоглы
-if (ToggleBtn("Sky",    showSkybox, ImVec2(38,24))) showSkybox=!showSkybox;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Skybox");
-ImGui::SameLine(0,2);
-if (ToggleBtn(" \xe2\x9a\x99 ", selType==SelectionType::Environment, ImVec2(28,24))) selType=SelectionType::Environment;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lighting: Time of Day, Fog");
-ImGui::SameLine(0,2);
-if (ToggleBtn("Grid",   showGrid,   ImVec2(40,24))) showGrid=!showGrid;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Grid");
-ImGui::SameLine(0,2);
-if (ToggleBtn("Gizmos", showGizmos, ImVec2(58,24))) showGizmos=!showGizmos;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle Gizmos");
-ImGui::SameLine();
-if (ToggleBtn("Bloom", g_BloomEnabled, ImVec2(58,24))) g_BloomEnabled=!g_BloomEnabled;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bloom + ACES tonemapping");
-
-ImGui::SameLine(0,16);
-ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.176f,0.188f,0.212f,1.f));
-ImGui::Text("|");
-ImGui::PopStyleColor();
-ImGui::SameLine(0,16);
-
-// ── Переключатель режима редактора (Object / Paint Mask) — как Mode в Blender ──
-if (ToggleBtn("Object", g_EditorMode==EditorMode::Object, ImVec2(56,24))) g_EditorMode=EditorMode::Object;
-if (ImGui::IsItemHovered()) ImGui::SetTooltip("Object Mode — normal select/move/rotate");
-ImGui::SameLine(0,2);
-bool canPaint = selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()
-    && !objects[sel].materials.empty() && objects[sel].materials[0].maskPixelSize>0;
-if (!canPaint) ImGui::BeginDisabled();
-if (ToggleBtn("Paint", g_EditorMode==EditorMode::PaintMask, ImVec2(50,24))) g_EditorMode=EditorMode::PaintMask;
-if (!canPaint) ImGui::EndDisabled();
-if (ImGui::IsItemHovered()) ImGui::SetTooltip(canPaint ? "Paint Mask Mode — LMB erases Layer2, Shift+LMB restores it" : "Create a Paintable Mask on the object's material first (Inspector tab)");
-if (g_EditorMode==EditorMode::PaintMask) {
-    ImGui::SameLine(0,10);
-    if (ToggleBtn("Erase", !g_BrushPaintMode, ImVec2(50,24))) g_BrushPaintMode=false;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("LMB erases Layer 2 (shows base texture through)");
-    ImGui::SameLine(0,2);
-    if (ToggleBtn("Fill##brushmode", g_BrushPaintMode, ImVec2(50,24))) g_BrushPaintMode=true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("LMB restores Layer 2 (hides base texture again)");
-    ImGui::SameLine(0,10);
-    ImGui::SetNextItemWidth(100);
-    ImGui::SliderFloat("Brush", &g_BrushRadius, 0.02f, 0.4f, "%.2f");
-}
-
-ImGui::End();
 ImGui::PopStyleColor();
 ImGui::PopStyleVar();
 
-// ───────────────────────────────────────────────────────
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 //   SIDE ICON PANEL (like concept - left vertical bar)
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── TOP ICON TOOLBAR (Blender-style) ──
+ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
+ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, toolH), ImGuiCond_Always);
+ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.094f,0.102f,0.114f,1.f));
+ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,4));
+ImGui::Begin("##toolbar", nullptr,
+    ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
+    ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoBringToFrontOnFocus);
+if (IconToolButton(IC_SELECT, gizmoMode==GizmoMode::Select, "Select (Q)")) gizmoMode=GizmoMode::Select;
+ImGui::SameLine(0,2);
+if (IconToolButton(IC_MOVE, gizmoMode==GizmoMode::Move, "Move (W)")) gizmoMode=GizmoMode::Move;
+ImGui::SameLine(0,2);
+if (IconToolButton(IC_ROTATE, gizmoMode==GizmoMode::Rotate, "Rotate (E)")) gizmoMode=GizmoMode::Rotate;
+ImGui::SameLine(0,2);
+if (IconToolButton(IC_SCALE, gizmoMode==GizmoMode::Scale, "Scale (R)")) gizmoMode=GizmoMode::Scale;
+ImGui::End();
+ImGui::PopStyleVar();
+ImGui::PopStyleColor();
+
 ImGui::SetNextWindowPos(ImVec2(0, menuH+toolH), ImGuiCond_Always);
 ImGui::SetNextWindowSize(ImVec2(sideW, viewH+bottomH), ImGuiCond_Always);
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.078f,0.086f,0.098f,1.f));
@@ -1978,7 +2125,7 @@ ImGui::Begin("##sidepanel", nullptr,
                 IM_COL32(180,185,200,255), 2.f);
         }
         ImGui::PushStyleColor(ImGuiCol_Button,
-            active ? ImVec4(0.15f,0.30f,0.55f,0.4f) : ImVec4(0.f,0.f,0.f,0.f));
+        active ? ImVec4(0.18f,0.20f,0.24f,1.f) : ImVec4(0.f,0.f,0.f,0.f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
             ImVec4(0.16f,0.18f,0.22f,1.f));
         ImGui::PushStyleColor(ImGuiCol_Text,
@@ -1993,7 +2140,7 @@ ImGui::Begin("##sidepanel", nullptr,
     };
 
     ImGui::Spacing();
-    SideIconBtn("Hier", "Hierarchy (H)",  0);
+    IconBtn(IC_HIER, g_SideTab==0, "Hierarchy (H)"); if (ImGui::IsItemClicked()) g_SideTab=0;
 
     // Push settings/help to bottom
     float bottomY = ImGui::GetWindowHeight() - 80.f;
@@ -2009,13 +2156,9 @@ ImGui::Begin("##sidepanel", nullptr,
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.f,0.f,0.f,0.f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f,0.18f,0.22f,1.f));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.50f,0.52f,0.58f,1.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
-    if (ImGui::Button("Sett", ImVec2(40,36))) logInfo("Settings (coming soon)");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Settings");
-    ImGui::Spacing();
-    if (ImGui::Button("Help", ImVec2(40,36))) logInfo("Help (coming soon)");
+    if (IconBtn(IC_SETTINGS, g_ShowPreferences, "Settings")) g_ShowPreferences = true;
+    if (IconBtn(IC_HELP, false, "Help")) logInfo("Help (coming soon)");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Help");
-    ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
 }
 ImGui::End();
@@ -2023,7 +2166,7 @@ ImGui::PopStyleVar(2);
 ImGui::PopStyleColor();
 
 //   HIERARCHY
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.086f,0.094f,0.106f,1.f));
 const char* leftPanelTitle = "Hierarchy";
 ImGui::Begin("Hierarchy##leftpanel", nullptr, ImGuiWindowFlags_NoCollapse);
@@ -2039,16 +2182,11 @@ ImGui::Separator();
 
 if (g_SideTab == 0) { // HIERARCHY
 
-// Поиск + кнопка добавить
-ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f,0.09f,0.13f,1.f));
-ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 40);
-ImGui::InputTextWithHint("##hs", "\xf0\x9f\x94\x8d  Search...", hierSearch, sizeof(hierSearch));
+// РџРѕРёСЃРє + РєРЅРѕРїРєР° РґРѕР±Р°РІРёС‚СЊ
+ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f,0.11f,0.12f,1.f));
+ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 4);
+ImGui::InputTextWithHint("##hs", "Search...", hierSearch, sizeof(hierSearch));
 ImGui::PopStyleColor();
-ImGui::SameLine(0,4);
-ImGui::PushStyleColor(ImGuiCol_Button,        COL_ACCENT);
-ImGui::PushStyleColor(ImGuiCol_ButtonHovered, COL_ACCENT_HOV);
-if (ImGui::Button(" + ", ImVec2(34,22))) ImGui::OpenPopup("##addobj");
-ImGui::PopStyleColor(2);
 
 if (ImGui::BeginPopup("##addobj")) {
     ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
@@ -2089,21 +2227,95 @@ if (ImGui::BeginPopup("##addobj")) {
     ImGui::EndPopup();
 }
 
+// ── ПКМ контекстное меню как в Unity ──
+if (ImGui::BeginPopup("##hierctx")) {
+    bool hasSel = (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size())
+               || (selType==SelectionType::Light && selLight>=0 && selLight<(int)lights.size())
+               || (selType==SelectionType::Camera && selCamera>=0 && selCamera<(int)sceneCameras.size());
+    if (hasSel) {
+        if (ImGui::MenuItem("Duplicate") && selType==SelectionType::Object) {
+            SceneObject o=objects[sel]; o.name=objects[sel].name+"_copy";
+            o.ecsID=scene.CreateEntity(o.name);
+            scene.GetTransform(o.ecsID).Position=o.pos;
+            objects.push_back(o); sel=(int)objects.size()-1;
+            logInfo("Duplicated: "+o.name);
+        }
+        if (ImGui::MenuItem("Unparent / Detach")) {
+            if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) { objects[sel].parentIndex=-1; logInfo("Unparented "+objects[sel].name); }
+            else if (selType==SelectionType::Camera && selCamera>=0 && selCamera<(int)sceneCameras.size()) { sceneCameras[selCamera].followTargetIndex=-1; logInfo("Camera detached: "+sceneCameras[selCamera].name); }
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Delete")) {
+            if (selType==SelectionType::Object && sel>=0) { logInfo("Deleted: "+objects[sel].name); objects.erase(objects.begin()+sel); sel=-1; selType=SelectionType::None; selUI=-1; selSprite2D=-1; }
+            else if (selType==SelectionType::Light && selLight>=0) { logInfo("Deleted: "+lights[selLight].name); lights.erase(lights.begin()+selLight); selLight=-1; selType=SelectionType::None; selUI=-1; selSprite2D=-1; }
+            else if (selType==SelectionType::Camera && selCamera>=0) { logInfo("Deleted: "+sceneCameras[selCamera].name); sceneCameras.erase(sceneCameras.begin()+selCamera); selCamera=-1; selType=SelectionType::None; selUI=-1; selSprite2D=-1; }
+        }
+        ImGui::Separator();
+    }
+    if (ImGui::BeginMenu("Create")) {
+        if (ImGui::MenuItem("Cube"))     addObject(objects,PrimitiveType::Cube,sel,selType);
+        if (ImGui::MenuItem("Sphere"))   addObject(objects,PrimitiveType::Sphere,sel,selType);
+        if (ImGui::MenuItem("Cylinder")) addObject(objects,PrimitiveType::Cylinder,sel,selType);
+        if (ImGui::MenuItem("Pyramid"))  addObject(objects,PrimitiveType::Pyramid,sel,selType);
+        if (ImGui::MenuItem("Capsule"))  addObject(objects,PrimitiveType::Capsule,sel,selType);
+        if (ImGui::MenuItem("Plane"))    addObject(objects,PrimitiveType::Plane,sel,selType);
+        if (ImGui::MenuItem("Empty"))    addObject(objects,PrimitiveType::Empty,sel,selType);
+        if (ImGui::MenuItem("Folder")) {
+            addObject(objects,PrimitiveType::Empty,sel,selType);
+            objects.back().name="Folder_"+std::to_string((int)objects.size());
+            logInfo("Created "+objects.back().name);
+        }
+            if (ImGui::MenuItem("2D Sprite")) { Sprite2D s; s.name="Sprite2D_"+std::to_string((int)sprites2D.size()+1); sprites2D.push_back(s); selSprite2D=(int)sprites2D.size()-1; logInfo("Created "+s.name); }
+            if (ImGui::MenuItem("UI Image")) { UIElement u; u.type=UIElement::Type::Image; u.name="UIImage_"+std::to_string((int)uiElements.size()+1); u.size=glm::vec2(200,200); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            if (ImGui::MenuItem("UI Text")) { UIElement u; u.type=UIElement::Type::Text; u.name="UIText_"+std::to_string((int)uiElements.size()+1); u.text="New Text"; u.size=glm::vec2(200,30); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            if (ImGui::MenuItem("UI Button")) { UIElement u; u.type=UIElement::Type::Button; u.name="UIButton_"+std::to_string((int)uiElements.size()+1); u.text="Button"; uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+        if (ImGui::MenuItem("UI Frame")) { UIElement u; u.type=UIElement::Type::Frame; u.name="UIFrame_"+std::to_string((int)uiElements.size()+1); u.size=glm::vec2(300,200); u.color=glm::vec4(0.15f,0.16f,0.2f,0.9f); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Point Light")) {
+            LightObject l; l.name="PointLight_"+std::to_string(lights.size()+1); l.pos=glm::vec3(0,3,0);
+            l.ecsID=scene.CreateEntity(l.name); scene.registry.AddComponent<VE::LightComponent>(l.ecsID,l.color,l.intensity);
+            lights.push_back(l); selLight=(int)lights.size()-1; selType=SelectionType::Light; logInfo("Created "+l.name);
+        }
+        if (ImGui::MenuItem("Camera")) {
+            if (ImGui::MenuItem("2D Sprite")) { Sprite2D s; s.name="Sprite2D_"+std::to_string((int)sprites2D.size()+1); sprites2D.push_back(s); selSprite2D=(int)sprites2D.size()-1; logInfo("Created "+s.name); }
+            if (ImGui::MenuItem("UI Image")) { UIElement u; u.type=UIElement::Type::Image; u.name="UIImage_"+std::to_string((int)uiElements.size()+1); u.size=glm::vec2(200,200); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            if (ImGui::MenuItem("UI Text")) { UIElement u; u.type=UIElement::Type::Text; u.name="UIText_"+std::to_string((int)uiElements.size()+1); u.text="New Text"; u.size=glm::vec2(200,30); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            if (ImGui::MenuItem("UI Button")) { UIElement u; u.type=UIElement::Type::Button; u.name="UIButton_"+std::to_string((int)uiElements.size()+1); u.text="Button"; uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+        if (ImGui::MenuItem("UI Frame")) { UIElement u; u.type=UIElement::Type::Frame; u.name="UIFrame_"+std::to_string((int)uiElements.size()+1); u.size=glm::vec2(300,200); u.color=glm::vec4(0.15f,0.16f,0.2f,0.9f); uiElements.push_back(u); selUI=(int)uiElements.size()-1; logInfo("Created "+u.name); }
+            CameraObject cam; cam.name="Camera_"+std::to_string(sceneCameras.size()+1); cam.pos=glm::vec3(0,2,5);
+            cam.ecsID=scene.CreateEntity(cam.name); scene.registry.AddComponent<VE::CameraComponent>(cam.ecsID,false);
+            sceneCameras.push_back(cam); selCamera=(int)sceneCameras.size()-1; selType=SelectionType::Camera; logInfo("Created "+cam.name);
+        }
+        ImGui::EndMenu();
+    }
+    ImGui::EndPopup();
+}
 HRule();
 
-// Сцена дерево
+// С†РµРЅР° РґРµСЂРµРІРѕ
 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
 ImGui::PushStyleColor(ImGuiCol_Text, COL_ACCENT_HOV);
 bool sceneOpen = ImGui::TreeNodeEx("  Untitled Scene", ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_DefaultOpen);
+if (ImGui::BeginDragDropTarget()) {
+    if (const ImGuiPayload* hp = ImGui::AcceptDragDropPayload("HIER_OBJ")) {
+        int src = *(const int*)hp->Data;
+        if (src>=0 && src<(int)objects.size()) { objects[src].parentIndex=-1; logInfo("Unparented "+objects[src].name); }
+    }
+    if (const ImGuiPayload* cp = ImGui::AcceptDragDropPayload("HIER_CAM")) {
+        int ci = *(const int*)cp->Data;
+        if (ci>=0 && ci<(int)sceneCameras.size()) { sceneCameras[ci].followTargetIndex=-1; logInfo("Camera detached: "+sceneCameras[ci].name); }
+    }
+    ImGui::EndDragDropTarget();
+}
 ImGui::PopStyleColor();
 
 if (sceneOpen) {
-    // ── Lighting — как сервис в Roblox: постоянный пункт, не объект сцены ──
+    // в”Ђв”Ђ Lighting вЂ” РєР°Рє СЃРµСЂРІРёСЃ РІ Roblox: РїРѕСЃС‚РѕСЏРЅРЅС‹Р№ РїСѓРЅРєС‚, РЅРµ РѕР±СЉРµРєС‚ СЃС†РµРЅС‹ в”Ђв”Ђ
     {
         bool isEnvSel = (selType == SelectionType::Environment);
         ImGui::PushStyleColor(ImGuiCol_Text, isEnvSel ? ImVec4(1,1,1,1) : ImVec4(1.0f,0.85f,0.4f,1.f));
         if (isEnvSel) ImGui::PushStyleColor(ImGuiCol_Header, COL_ACCENT);
-        ImGui::Selectable("  [W] Lighting", isEnvSel);
+        ImGui::Selectable("  Lighting", isEnvSel);
         if (ImGui::IsItemClicked()) { selType = SelectionType::Environment; }
         if (isEnvSel) ImGui::PopStyleColor();
         ImGui::PopStyleColor();
@@ -2115,26 +2327,34 @@ if (sceneOpen) {
         std::string filter(hierSearch);
         if (!filter.empty() && obj.name.find(filter)==std::string::npos) continue;
 
-        const char* icons[] = {"[#]","[o]","[|]","[^]","[*]","[-]","[M]","[+]"};
         bool hasChildren = false;
         for (int j=0;j<(int)objects.size();j++) if(objects[j].parentIndex==i){hasChildren=true;break;}
+        if(!hasChildren) for (int j=0;j<(int)sceneCameras.size();j++) if(sceneCameras[j].followTargetIndex==i){hasChildren=true;break;}
 
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
         if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if (selType==SelectionType::Object && i==sel) {
             flags |= ImGuiTreeNodeFlags_Selected;
-            ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.22f,0.14f,0.38f,1.f));
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.28f,0.18f,0.48f,1.f));
+            ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.16f,0.17f,0.20f,1.f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.22f,0.23f,0.26f,1.f));
         }
 
-        std::string label = std::string("  ")+icons[(int)obj.type]+" "+obj.name;
+        ImVec4 labelColor = ImVec4(0.85f,0.85f,0.90f,1.f); // default white
+        if (obj.type==PrimitiveType::Model3D) labelColor = ImVec4(0.6f,0.9f,0.6f,1.f); // green
+        else if (obj.type==PrimitiveType::Empty) labelColor = ImVec4(0.5f,0.5f,0.55f,1.f); // gray
+        if (obj.name.rfind("Folder_",0)==0) labelColor = ImVec4(0.93f,0.79f,0.42f,1.f);
+        ImGui::PushStyleColor(ImGuiCol_Text, labelColor);
+        std::string label = "  " + obj.name;
+        ImGui::PopStyleColor();
         bool nodeOpen = hasChildren ? ImGui::TreeNodeEx(label.c_str(), flags) : (ImGui::TreeNodeEx(label.c_str(), flags), false);
 
         if (selType==SelectionType::Object && i==sel) ImGui::PopStyleColor(2);
 
         if (ImGui::IsItemClicked()) { sel=i; selType=SelectionType::Object; }
+        if (ImGui::IsItemClicked(1)) { sel=i; selType=SelectionType::Object; ImGui::OpenPopup("##hierctx"); }
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) { ImGui::SetDragDropPayload("HIER_OBJ", &i, sizeof(int)); ImGui::TextUnformatted(obj.name.c_str()); ImGui::EndDragDropSource(); }
 
-        // ── Drop target: перетащи .mat прямо на объект в Hierarchy ──
+        // в”Ђв”Ђ Drop target: РїРµСЂРµС‚Р°С‰Рё .mat РїСЂСЏРјРѕ РЅР° РѕР±СЉРµРєС‚ РІ Hierarchy в”Ђв”Ђ
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MATERIAL_PATH")) {
                 std::string matPath((const char*)payload->Data, payload->DataSize-1);
@@ -2157,6 +2377,21 @@ if (sceneOpen) {
                 for(auto& sp:tobj.scriptPaths) if(sp==scriptPath){ already=true; break; }
                 if(!already){ tobj.scriptPaths.push_back(scriptPath); tobj.hasScript=true; }
                 logInfo("Script '"+fs::path(scriptPath).filename().string()+"' -> "+tobj.name+" (dropped)");
+            }
+            if (const ImGuiPayload* hp = ImGui::AcceptDragDropPayload("HIER_OBJ")) {
+                int src = *(const int*)hp->Data;
+                if (src!=i && src>=0 && src<(int)objects.size()) {
+                    bool isDesc=false; for (int p=i; p>=0; p=objects[p].parentIndex) if (p==src) { isDesc=true; break; }
+                    if (!isDesc) { objects[src].parentIndex=i; logInfo("Parented "+objects[src].name+" -> "+objects[i].name); }
+                }
+            }
+            if (const ImGuiPayload* cp = ImGui::AcceptDragDropPayload("HIER_CAM")) {
+                int ci = *(const int*)cp->Data;
+                if (ci>=0 && ci<(int)sceneCameras.size()) {
+                    sceneCameras[ci].followTargetIndex=i;
+                    sceneCameras[ci].followOffset=sceneCameras[ci].pos-objects[i].pos;
+                    logInfo("Camera "+sceneCameras[ci].name+" attached to "+objects[i].name);
+                }
             }
             ImGui::EndDragDropTarget();
         }
@@ -2187,8 +2422,8 @@ if (sceneOpen) {
                 logInfo("Deleted: "+objects[i].name);
                 objects.erase(objects.begin()+i);
                 sel=(int)objects.size()-1;
-                if(objects.empty()){sel=-1;selType=SelectionType::None;}
-                ImGui::EndPopup(); if(hasChildren) ImGui::TreePop(); break;
+                if(objects.empty()){sel=-1;selType=SelectionType::None;} selUI=-1; selSprite2D=-1;
+                ImGui::EndPopup(); if(hasChildren && nodeOpen) ImGui::TreePop(); break;
             } else {
                 ImGui::PopStyleColor();
             }
@@ -2210,17 +2445,34 @@ if (sceneOpen) {
             ImGui::EndPopup();
         }
 
-        if (hasChildren && nodeOpen) {
-            for (int j=0;j<(int)objects.size();j++) {
-                if(objects[j].parentIndex!=i) continue;
-                ImGuiTreeNodeFlags cf=ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen;
-                if(selType==SelectionType::Object&&j==sel) cf|=ImGuiTreeNodeFlags_Selected;
-                ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-                ImGui::TreeNodeEx(("    > "+objects[j].name).c_str(), cf);
-                ImGui::PopStyleColor();
-                if(ImGui::IsItemClicked()){sel=j;selType=SelectionType::Object;}
+        if (hasChildren) {
+            if (nodeOpen) {
+                ImGui::Indent(16.f);
+        for (int c=0;c<(int)objects.size();c++) {
+            if (objects[c].parentIndex!=i) continue;
+            bool cSel=(selType==SelectionType::Object&&c==sel);
+            if (cSel) { ImGui::PushStyleColor(ImGuiCol_Header,ImVec4(0.16f,0.17f,0.20f,1.f)); ImGui::PushStyleColor(ImGuiCol_HeaderHovered,ImVec4(0.22f,0.23f,0.26f,1.f)); }
+            ImGui::TreeNodeEx(("  "+objects[c].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(cSel?ImGuiTreeNodeFlags_Selected:0));
+            if (cSel) ImGui::PopStyleColor(2);
+            if (ImGui::IsItemClicked()) { sel=c; selType=SelectionType::Object; }
+            if (ImGui::IsMouseDoubleClicked(0) && ImGui::IsItemHovered()) { objects[c].parentIndex=-1; logInfo("Unparented "+objects[c].name); }
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) { ImGui::SetDragDropPayload("HIER_OBJ",&c,sizeof(int)); ImGui::TextUnformatted(objects[c].name.c_str()); ImGui::EndDragDropSource(); }
+        }
+        for (int c=0;c<(int)sceneCameras.size();c++) {
+            if (sceneCameras[c].followTargetIndex!=i) continue;
+            bool cSel=(selType==SelectionType::Camera&&c==selCamera);
+            ImGui::PushStyleColor(ImGuiCol_Text, COL_CAM_OBJ);
+            ImGui::TreeNodeEx(("  "+sceneCameras[c].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(cSel?ImGuiTreeNodeFlags_Selected:0));
+            ImGui::PopStyleColor(1);
+            if (ImGui::IsItemClicked()) { selCamera=c; selType=SelectionType::Camera; }
+            if (ImGui::IsMouseDoubleClicked(0) && ImGui::IsItemHovered()) { sceneCameras[c].followTargetIndex=-1; logInfo("Camera detached: "+sceneCameras[c].name); }
+                if (ImGui::IsItemClicked(1)) { selCamera=c; selType=SelectionType::Camera; ImGui::OpenPopup("##hierctx"); }
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) { ImGui::SetDragDropPayload("HIER_CAM",&c,sizeof(int)); ImGui::TextUnformatted(sceneCameras[c].name.c_str()); ImGui::EndDragDropSource(); }
+        }
+                ImGui::Unindent(16.f);
             }
             ImGui::TreePop();
+        }
         }
     }
     // Lights
@@ -2228,49 +2480,108 @@ if (sceneOpen) {
         ImGuiTreeNodeFlags flags=ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if(selType==SelectionType::Light&&i==selLight) flags|=ImGuiTreeNodeFlags_Selected;
         ImGui::PushStyleColor(ImGuiCol_Text, COL_LIGHT_OBJ);
-        ImGui::TreeNodeEx(("  [L] "+lights[i].name).c_str(), flags);
+        ImGui::TreeNodeEx(("  "+lights[i].name).c_str(), flags);
         ImGui::PopStyleColor();
         if(ImGui::IsItemClicked()){selLight=i;selType=SelectionType::Light;}
     }
     // Cameras
     for (int i=0;i<(int)sceneCameras.size();i++) {
+        if (sceneCameras[i].followTargetIndex>=0 && sceneCameras[i].followTargetIndex<(int)objects.size()) continue;
         ImGuiTreeNodeFlags flags=ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if(selType==SelectionType::Camera&&i==selCamera) flags|=ImGuiTreeNodeFlags_Selected;
         ImGui::PushStyleColor(ImGuiCol_Text, COL_CAM_OBJ);
-        ImGui::TreeNodeEx(("  [C] "+sceneCameras[i].name).c_str(), flags);
+        ImGui::TreeNodeEx(("  "+sceneCameras[i].name).c_str(), flags);
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) { ImGui::SetDragDropPayload("HIER_CAM", &i, sizeof(int)); ImGui::TextUnformatted(sceneCameras[i].name.c_str()); ImGui::EndDragDropSource(); }
         ImGui::PopStyleColor();
         if(ImGui::IsItemClicked()){selCamera=i;selType=SelectionType::Camera;}
     }
     ImGui::TreePop();
-}
 
+    static bool s_uiNodeHover=false; s_uiNodeHover=false;
+    // ── Canvas (UI) — как в Unity ──
+    {
+        bool canOpen = ImGui::TreeNodeEx("  Canvas", ImGuiTreeNodeFlags_DefaultOpen|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen);
+        if (canOpen) {
+                ImGui::Indent(16.f);
+            for (int i2=0;i2<(int)uiElements.size();i2++) {
+                bool s2=(selUI==i2);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f,0.5f,0.8f,1.f));
+                ImGui::TreeNodeEx(("  "+uiElements[i2].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(s2?ImGuiTreeNodeFlags_Selected:0));
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) s_uiNodeHover=true;
+                if (ImGui::IsItemClicked()) { selUI=i2; selSprite2D=-1; sel=-1; selType=SelectionType::None; }
+             if (ImGui::BeginDragDropTarget()) {
+                 if (const ImGuiPayload* tp =
+                     ImGui::AcceptDragDropPayload(
+                     "TEXTURE_PATH")) {
+                     std::string tp2(
+                         (const char*)tp->Data,
+                         tp->DataSize-1);
+                     UI_TexPick(i2, tp2);
+                 }
+                 ImGui::EndDragDropTarget();
+             }
+             if (ImGui::BeginDragDropTarget()) {
+                 if (const ImGuiPayload* tp =
+                     ImGui::AcceptDragDropPayload(
+                     "TEXTURE_PATH")) {
+                     std::string tp2(
+                         (const char*)tp->Data,
+                         tp->DataSize-1);
+                     UI_TexPick(i2, tp2);
+                 }
+                 ImGui::EndDragDropTarget();
+             }
+             if (ImGui::BeginDragDropTarget()) {
+                 if (const ImGuiPayload* tp = ImGui::AcceptDragDropPayload("TEXTURE_PATH")) {
+                     std::string texPath((const char*)tp->Data, tp->DataSize-1);
+                     GLuint t = VE::LoadTextureRaw(texPath);
+                     if (t) { uiElements[i2].tex = t; uiElements[i2].texPath = texPath; logInfo("Texture -> "+uiElements[i2].name); }
+                 }
+                 ImGui::EndDragDropTarget();
+             }
+            }
+                ImGui::Unindent(16.f);
+            }
+        }
+        // ── 2D Sprites ──
+    for (int i2=0;i2<(int)sprites2D.size();i2++) {
+        bool s2=(selSprite2D==i2);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f,0.9f,0.9f,1.f));
+        ImGui::TreeNodeEx(("  "+sprites2D[i2].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(s2?ImGuiTreeNodeFlags_Selected:0));
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemClicked()) { selSprite2D=i2; selUI=-1; sel=-1; selType=SelectionType::None; }
+    }
 } // end g_SideTab == 0 (Hierarchy)
 
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) ImGui::OpenPopup("##hierctx");
 ImGui::End();
 ImGui::PopStyleColor();
 
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 //   VIEWPORT
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
 ImGui::PushStyleColor(ImGuiCol_WindowBg,    ImVec4(0.071f,0.078f,0.090f,1.f));
-ImGui::PushStyleColor(ImGuiCol_Tab,         ImVec4(0.08f,0.07f,0.11f,1.f));
-ImGui::PushStyleColor(ImGuiCol_TabActive,   ImVec4(0.16f,0.11f,0.26f,1.f));
-ImGui::PushStyleColor(ImGuiCol_TabHovered,  ImVec4(0.22f,0.15f,0.35f,1.f));
+ImGui::PushStyleColor(ImGuiCol_Tab,         ImVec4(0.08f,0.09f,0.10f,1.f));
+ImGui::PushStyleColor(ImGuiCol_TabActive,   ImVec4(0.16f,0.17f,0.20f,1.f));
+ImGui::PushStyleColor(ImGuiCol_TabHovered,  ImVec4(0.22f,0.23f,0.26f,1.f));
 ImGui::Begin("Viewport##viewport", nullptr,
     ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar);
 
 if (ImGui::BeginTabBar("##vptabs")) {
+    if (g_WantGameTab) { ImGuiTabBar* tb=ImGui::GetCurrentTabBar(); if (tb) tb->NextSelectedTabId = ImGui::GetID("  Game"); g_WantGameTab=false; }
     if (ImGui::BeginTabItem("  Scene")) {
         float tw=ImGui::GetContentRegionAvail().x, th=ImGui::GetContentRegionAvail().y;
         g_VpPos=ImGui::GetCursorScreenPos(); g_VpSize=ImVec2(tw,th);
-        // Теперь FBO динамически масштабируется под размер ImGui окна,
-        // поэтому UV всегда (0,1)-(1,0) для полного отображения текстуры
+        // РµРїРµСЂСЊ FBO РґРёРЅР°РјРёС‡РµСЃРєРё РјР°СЃС€С‚Р°Р±РёСЂСѓРµС‚СЃСЏ РїРѕРґ СЂР°Р·РјРµСЂ ImGui РѕРєРЅР°,
+        // РїРѕСЌС‚РѕРјСѓ UV РІСЃРµРіРґР° (0,1)-(1,0) РґР»СЏ РїРѕР»РЅРѕРіРѕ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ С‚РµРєСЃС‚СѓСЂС‹
         ImGui::Image((ImTextureID)(intptr_t)sceneTex, ImVec2(tw,th), ImVec2(0,1), ImVec2(1,0));
+        { ImVec2 gmin=ImGui::GetItemRectMin(); ImVec2 gsz=ImGui::GetItemRectSize(); VEUI::Draw(uiElements, gmin, gsz, true, &selUI); if (VEUI::clickedElement) { sel=-1; selCamera=-1; selLight=-1; selSprite2D=-1; selType=SelectionType::None; } }
 
-        // ── Drop target: raycast-based material drop (like Godot/Unity) ──
+        // в”Ђв”Ђ Drop target: raycast-based material drop (like Godot/Unity) в”Ђв”Ђ
         if (ImGui::BeginDragDropTarget()) {
-            // Во время hover — подсвечиваем объект под курсором
+            // Р’Рѕ РІСЂРµРјСЏ hover вЂ” РїРѕРґСЃРІРµС‡РёРІР°РµРј РѕР±СЉРµРєС‚ РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј
             ImVec2 mp = ImGui::GetIO().MousePos;
             double lx = mp.x - g_VpPos.x;
             double ly = mp.y - g_VpPos.y;
@@ -2289,7 +2600,7 @@ if (ImGui::BeginTabBar("##vptabs")) {
 
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MATERIAL_PATH")) {
                 std::string matPath((const char*)payload->Data, payload->DataSize-1);
-                // Применяем к объекту под курсором, или к выбранному если нет под курсором
+                // РџСЂРёРјРµРЅСЏРµРј Рє РѕР±СЉРµРєС‚Сѓ РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј, РёР»Рё Рє РІС‹Р±СЂР°РЅРЅРѕРјСѓ РµСЃР»Рё РЅРµС‚ РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј
                 int targetObj = (g_DragHoverObj >= 0) ? g_DragHoverObj
                               : (selType==SelectionType::Object && sel>=0) ? sel : -1;
                 if (targetObj >= 0 && targetObj < (int)objects.size()) {
@@ -2328,17 +2639,17 @@ if (ImGui::BeginTabBar("##vptabs")) {
             ImGui::EndDragDropTarget();
         }
 
-        // Подсветка объекта под курсором во время drag&drop
+        // РџРѕРґСЃРІРµС‚РєР° РѕР±СЉРµРєС‚Р° РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј РІРѕ РІСЂРµРјСЏ drag&drop
         if (g_DragHoverObj >= 0 && g_DragHoverObj < (int)objects.size()) {
             auto* dndDl = ImGui::GetWindowDrawList();
-            // Рисуем пульсирующий контур вокруг названия объекта
+            // Р РёСЃСѓРµРј РїСѓР»СЊСЃРёСЂСѓСЋС‰РёР№ РєРѕРЅС‚СѓСЂ РІРѕРєСЂСѓРі РЅР°Р·РІР°РЅРёСЏ РѕР±СЉРµРєС‚Р°
             ImVec2 hintPos = ImVec2(g_VpPos.x + 8, g_VpPos.y + 8);
             dndDl->AddText(hintPos, IM_COL32(255,200,80,220),
                 ("Drop material on: "+objects[g_DragHoverObj].name).c_str());
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-            // GetMouseDragDelta корректно работает и на кадре отпускания кнопки
-            // (в отличие от IsMouseDragging, которая требует, чтобы кнопка ещё была зажата)
+            // GetMouseDragDelta РєРѕСЂСЂРµРєС‚РЅРѕ СЂР°Р±РѕС‚Р°РµС‚ Рё РЅР° РєР°РґСЂРµ РѕС‚РїСѓСЃРєР°РЅРёСЏ РєРЅРѕРїРєРё
+            // (РІ РѕС‚Р»РёС‡РёРµ РѕС‚ IsMouseDragging, РєРѕС‚РѕСЂР°СЏ С‚СЂРµР±СѓРµС‚, С‡С‚РѕР±С‹ РєРЅРѕРїРєР° РµС‰С‘ Р±С‹Р»Р° Р·Р°Р¶Р°С‚Р°)
             ImVec2 dragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right, 5.0f);
             if (dragDelta.x == 0.0f && dragDelta.y == 0.0f)
                 ImGui::OpenPopup("##scene_ctx");
@@ -2430,11 +2741,11 @@ if (ImGui::BeginTabBar("##vptabs")) {
                     logInfo("Deleted: "+objects[sel].name);
                     objects.erase(objects.begin()+sel);
                     sel=(int)objects.size()-1;
-                    if(objects.empty()){sel=-1;selType=SelectionType::None;}
+                    if(objects.empty()){sel=-1;selType=SelectionType::None;} selUI=-1; selSprite2D=-1;
                 }
             }
 
-            // ── "Save as Prefab" popup ──
+            // в”Ђв”Ђ "Save as Prefab" popup в”Ђв”Ђ
             if (ImGui::BeginPopupModal("##save_prefab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::Text("Prefab name:");
                 ImGui::SetNextItemWidth(300);
@@ -2487,902 +2798,449 @@ if (ImGui::BeginTabBar("##vptabs")) {
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("  Game")) {
-        float tw=ImGui::GetContentRegionAvail().x, th=ImGui::GetContentRegionAvail().y;
-        if (isPlaying) {
-            ImVec2 gamePos = ImGui::GetCursorScreenPos();
-            // FBO теперь динамически масштабируется под размер ImGui окна
-            ImGui::Image((ImTextureID)(intptr_t)gameTex, ImVec2(tw,th), ImVec2(0,1), ImVec2(1,0));
-            // ── Захват курсора: клик по Game — прячем и зацикливаем мышь для FPS-камеры ──
-            if (ImGui::IsItemClicked() && !g_MouseCaptured) {
-                g_MouseCaptured = true;
-                glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                g_RawMouseFirst = true; // не дать скачок дельты в первом кадре захвата
+        if (gameTex) {
+            ImVec2 vp = ImGui::GetContentRegionAvail();
+            ImVec2 uv0(0,0), uv1(1,1);
+            ImGui::Image((ImTextureID)(intptr_t)gameTex, vp, uv0, uv1);
+            ImVec2 gmin=ImGui::GetItemRectMin(); ImVec2 gsz=ImGui::GetItemRectSize();
+            VEUI::Draw(uiElements, gmin, gsz, false, nullptr);
+            if (VEUI::clickedThisFrame>=0 && VEUI::clickedThisFrame<(int)uiElements.size()) {
+                std::string clickedName = uiElements[VEUI::clickedThisFrame].name;
+                for(auto& obj:objects) for(auto& li:obj.luaInstances) if(li && li->L) {
+                    lua_getglobal(li->L,"UI");
+                    if(lua_istable(li->L,-1)){
+                        lua_getfield(li->L,-1,"_callbacks");
+                        if(lua_istable(li->L,-1)){
+                            lua_getfield(li->L,-1,clickedName.c_str());
+                            if(lua_istable(li->L,-1)){
+                                int len=(int)lua_rawlen(li->L,-1);
+                                for(int k=1;k<=len;k++){
+                                    lua_rawgeti(li->L,-1,k);
+                                    if(lua_isfunction(li->L,-1)){
+                                        if(lua_pcall(li->L,0,0,0)!=LUA_OK) logError("[Lua] "+std::string(lua_tostring(li->L,-1)));
+                                    } else lua_pop(li->L,1);
+                                }
+                            }
+                            lua_pop(li->L,1);
+                        }
+                        lua_pop(li->L,1);
+                    }
+                    lua_pop(li->L,1);
+                }
             }
-            if (g_MouseCaptured && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                g_MouseCaptured = false;
-                glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            }
-            if (g_MouseCaptured) {
-                ImGui::SetCursorPos(ImVec2(8,8));
-                ImGui::TextColored(COL_DIM, "Esc to release mouse");
-            }
-            // ── HUD поверх игры ──
-            VE::HUD::Get().Draw(gamePos, ImVec2(tw, th));
-        } else {
-            ImGui::SetCursorPos(ImVec2(tw*0.5f-110.f, th*0.5f-12.f));
-            ImGui::TextColored(COL_DIM, "  Press  Play  to  enter  Game  mode");
         }
         ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
-}
 ImGui::End();
-ImGui::PopStyleColor(4);
-ImGui::PopStyleVar();
-
-// ───────────────────────────────────────────────────────
+ImGui::PopStyleColor(4); ImGui::PopStyleVar();
+// ──────────────────────────────────────────────────────────────────────────────
 //   INSPECTOR
-// ───────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.078f,0.086f,0.098f,1.f));
-ImGui::Begin("  Inspector ", nullptr, ImGuiWindowFlags_NoCollapse);
+ImGui::Begin("Inspector##inspector", nullptr, ImGuiWindowFlags_NoCollapse);
 
 if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
-    auto& obj = objects[sel];
-
-    // Заголовок объекта
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f,0.09f,0.14f,1.f));
-    ImGui::Checkbox("##act", &obj.active); ImGui::SameLine();
-    static char nb[64]; strncpy_s(nb, obj.name.c_str(), sizeof(nb)-1);
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::InputText("##nm", nb, sizeof(nb))) obj.name=nb;
-    ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-    ImGui::Text("  Tag: Untagged     Layer: Default");
-    ImGui::PopStyleColor();
-    HRule();
-
-    // Transform
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if (ImGui::CollapsingHeader("  Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PopStyleColor(2);
-        float lw = 70.f;
-        // Position
-        ImGui::Text("Position"); ImGui::SameLine(lw);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_RED_X);
-        ImGui::Text("X"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##px",&obj.pos.x,0.05f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_GREEN_Y);
-        ImGui::Text("Y"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##py",&obj.pos.y,0.05f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_BLUE_Z);
-        ImGui::Text("Z"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);  ImGui::DragFloat("##pz",&obj.pos.z,0.05f);
-        // Rotation
-        ImGui::Text("Rotation"); ImGui::SameLine(lw);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_RED_X);
-        ImGui::Text("X"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##rx",&obj.rot.x,0.5f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_GREEN_Y);
-        ImGui::Text("Y"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##ry",&obj.rot.y,0.5f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_BLUE_Z);
-        ImGui::Text("Z"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);  ImGui::DragFloat("##rz",&obj.rot.z,0.5f);
-        // Scale
-        ImGui::Text("Scale"); ImGui::SameLine(lw);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_RED_X);
-        ImGui::Text("X"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##sx",&obj.scale.x,0.05f,0.001f,100.f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_GREEN_Y);
-        ImGui::Text("Y"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##sy",&obj.scale.y,0.05f,0.001f,100.f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_BLUE_Z);
-        ImGui::Text("Z"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);  ImGui::DragFloat("##sz",&obj.scale.z,0.05f,0.001f,100.f);
-    } else { ImGui::PopStyleColor(2); }
-
-    // Mesh Renderer
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if (ImGui::CollapsingHeader("  Mesh Renderer", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PopStyleColor(2);
-        ImGui::Text("Mesh:"); ImGui::SameLine(80);
-        ImGui::TextColored(COL_ACCENT_HOV, "%s", typeNames[(int)obj.type]);
-        if(obj.type==PrimitiveType::Model3D){
-            ImGui::Text("File:"); ImGui::SameLine(80);
-            if(obj.modelPath.empty()) ImGui::TextColored(COL_DIM,"None");
-            else ImGui::TextColored(COL_GREEN,"%s",fs::path(obj.modelPath).filename().string().c_str());
-            if(ImGui::Button("Load Model...",ImVec2(-1,0))){
-                // Открыть папку Assets в проводнике для выбора файла
-                std::string cmd="explorer "+projectRoot+"\\Assets";
-                system(cmd.c_str());
-                logInfo("Put your .obj/.fbx/.gltf in Assets folder, then double-click it in Project panel");
-            }
-        }
-        ImGui::Text("Color:"); ImGui::SameLine(80);
-        ImGui::SetNextItemWidth(-1); ImGui::ColorEdit3("##col", glm::value_ptr(obj.color));
-    } else { ImGui::PopStyleColor(2); }
-
-    // ── Animation (только для моделей со скелетом и клипами) ──
-    if (obj.type==PrimitiveType::Model3D && obj.model && obj.model->hasSkeleton && !obj.model->animations.empty()) {
-        HRule();
-        ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-        if (ImGui::CollapsingHeader("  Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PopStyleColor(2);
-
-            const char* curName = (obj.animIndex>=0 && obj.animIndex<(int)obj.model->animations.size())
-                ? obj.model->animations[obj.animIndex].name.c_str() : "None";
-            if (ImGui::BeginCombo("Clip", curName)) {
-                for (int a=0; a<(int)obj.model->animations.size(); a++) {
-                    bool sel = (obj.animIndex==a);
-                    if (ImGui::Selectable(obj.model->animations[a].name.c_str(), sel)) {
-                        obj.animIndex = a; obj.animTime = 0.f;
-                    }
-                    if (sel) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-
-            ImGui::BeginDisabled(obj.animIndex<0);
-            if (ImGui::Button(obj.animPlaying ? "  Pause  " : "  Play  ", ImVec2(80,0))) {
-                obj.animPlaying = !obj.animPlaying;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("  Stop  ", ImVec2(80,0))) {
-                obj.animPlaying = false; obj.animTime = 0.f;
-            }
-            ImGui::SameLine();
-            ImGui::Checkbox("Loop", &obj.animLoop);
-
-            if (obj.animIndex>=0) {
-                float dur = obj.model->animations[obj.animIndex].duration / std::max(1.f, obj.model->animations[obj.animIndex].ticksPerSecond);
-                ImGui::SliderFloat("Time", &obj.animTime, 0.f, std::max(0.01f,dur), "%.2f s");
-            }
-            ImGui::EndDisabled();
-        } else { ImGui::PopStyleColor(2); }
-    }
-
-    // ── Materials ──
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if (ImGui::CollapsingHeader("  Materials", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PopStyleColor(2);
-
-        // Гарантируем хотя бы один материал
-        if (obj.materials.empty()) {
-            Material m; m.name = "Default";
-            // Подхватываем старый texturePath если был (обратная совместимость)
-            if (!obj.texturePath.empty()) { m.texturePath = obj.texturePath; m.textureID = obj.textureID; }
-            m.color = obj.color;
-            obj.materials.push_back(m);
-        }
-        if (obj.activeMaterial < 0 || obj.activeMaterial >= (int)obj.materials.size())
-            obj.activeMaterial = 0;
-
-        // Список материалов — горизонтальные вкладки-плашки
-        for (int m = 0; m < (int)obj.materials.size(); m++) {
-            bool isActive = (m == obj.activeMaterial);
-            ImGui::PushID(m);
-            ImGui::PushStyleColor(ImGuiCol_Button,
-                isActive ? ImVec4(0.20f,0.22f,0.27f,1.f) : ImVec4(0.13f,0.13f,0.15f,1.f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f,0.20f,0.24f,1.f));
-            if (ImGui::Button(obj.materials[m].name.c_str(), ImVec2(0,24))) obj.activeMaterial = m;
-            ImGui::PopStyleColor(2);
-            ImGui::PopID();
-            if (m < (int)obj.materials.size()-1) ImGui::SameLine(0,4);
-        }
-
-        // Кнопки + / -
-        ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.16f,0.19f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f,0.22f,0.26f,1.f));
-        if (ImGui::Button(" + ", ImVec2(0,24))) {
-            Material m; m.name = "Material_"+std::to_string(obj.materials.size()+1);
-            obj.materials.push_back(m);
-            obj.activeMaterial = (int)obj.materials.size()-1;
-            logInfo("Added material slot: "+m.name);
-        }
-        if (obj.materials.size() > 1) {
-            ImGui::SameLine(0,2);
-            if (ImGui::Button(" - ", ImVec2(0,24))) {
-                obj.materials.erase(obj.materials.begin()+obj.activeMaterial);
-                obj.activeMaterial = std::max(0, obj.activeMaterial-1);
-            }
-        }
-        ImGui::PopStyleColor(2);
-
-        ImGui::Spacing();
+    SceneObject& obj = objects[sel];
+    static char nameBuf[128]; static int nameIdx=-1;
+    if (nameIdx!=sel) { strncpy_s(nameBuf, obj.name.c_str(), 127); nameIdx=sel; }
+    if (ImGui::InputText("Name", nameBuf, 128)) obj.name = nameBuf;
+    ImGui::Separator();
+    ImGui::DragFloat3("Position", &obj.pos.x, 0.05f);
+    ImGui::DragFloat3("Rotation", &obj.rot.x, 0.5f);
+    ImGui::DragFloat3("Scale", &obj.scale.x, 0.05f);
+    ImGui::ColorEdit3("Color", &obj.color.r);
+    ImGui::Checkbox("Active", &obj.active);
+    ImGui::Separator();
+    static bool s_wantNewScript=false;
+    if (ImGui::Button("Add Module", ImVec2(-1,0))) ImGui::OpenPopup("##add_comp");
+for (size_t si=0; si<obj.scriptPaths.size(); si++) {
+    std::string fn = fs::path(obj.scriptPaths[si]).filename().string();
+    ImGui::TextColored(ImVec4(0.6f,1.f,0.6f,1.f), "  [lua] %s", fn.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton(("x##rmc"+std::to_string(si)).c_str())) {
+        obj.scriptPaths.erase(obj.scriptPaths.begin()+si);
+        if (obj.scriptPaths.empty()) obj.hasScript=false; }
+}
+    if (ImGui::BeginPopup("##add_comp")) {
+        ImGui::TextColored(COL_DIM, "  Add Module");
         ImGui::Separator();
-        ImGui::Spacing();
-
-        // ── Настройки выбранного материала ──
-        Material& mat = obj.materials[obj.activeMaterial];
-
-        ImGui::Text("Name:"); ImGui::SameLine(80);
-        static char s_MatNameBuf[64];
-        strncpy_s(s_MatNameBuf, mat.name.c_str(), sizeof(s_MatNameBuf)-1);
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputText("##matname", s_MatNameBuf, sizeof(s_MatNameBuf)))
-            mat.name = s_MatNameBuf;
-
-        ImGui::Text("Color:"); ImGui::SameLine(80);
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::ColorEdit3("##matcol", glm::value_ptr(mat.color))) {
-            if (obj.activeMaterial == 0) obj.color = mat.color; // главный материал красит весь объект
+        ImGui::TextColored(COL_DIM, "  Physics");
+        if (ImGui::Selectable("Rigidbody")) {
+            if (!obj.hasRigidBody) {
+                obj.hasRigidBody=true; obj.mass=1.f; obj.useGravity=true;
+                if (scene.IsAlive(obj.ecsID)) { auto& rb=scene.registry.AddComponent<VE::RigidbodyComponent>(obj.ecsID); rb.Mass=1.f; rb.UseGravity=true; }
+                logInfo("Rigidbody -> "+obj.name);
+            } else logWarn("Already has Rigidbody");
         }
-
-        ImGui::Text("Texture:"); ImGui::SameLine(80);
-        if (mat.texturePath.empty()) ImGui::TextColored(COL_DIM, "(none)");
-        else ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.texturePath).filename().string().c_str());
-        if (ImGui::Button(g_MatPickTarget==1 ? "Waiting for click..." : "Set Texture...", ImVec2(150,0)))
-            g_MatPickTarget = (g_MatPickTarget==1) ? 0 : 1;
-        if (!mat.texturePath.empty()) {
-            ImGui::SameLine();
-            if (ImGui::Button("Clear##tex")) { mat.texturePath.clear(); mat.textureID = 0; }
+        if (ImGui::Selectable("Box Collider")) {
+            if (!obj.hasCollider) { obj.hasCollider=true;
+                if (scene.IsAlive(obj.ecsID)) { VE::ColliderComponent c; c.Shape=(VE::ColliderComponent::ShapeType)0; c.HalfSize={obj.scale.x*0.5f,obj.scale.y*0.5f,obj.scale.z*0.5f}; scene.registry.AddComponent<VE::ColliderComponent>(obj.ecsID)=c; }
+                logInfo("Box Collider -> "+obj.name);
+            } else logWarn("Already has Collider");
         }
-
-        ImGui::Spacing();
-        ImGui::TextColored(COL_DIM, "Layer 2 (e.g. concrete over bricks):");
-        ImGui::Text("Layer 2:"); ImGui::SameLine(80);
-        if (mat.layer2TexturePath.empty()) ImGui::TextColored(COL_DIM, "(none)");
-        else ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.layer2TexturePath).filename().string().c_str());
-        if (ImGui::Button(g_MatPickTarget==2 ? "Waiting for click..." : "Set Layer 2...", ImVec2(150,0)))
-            g_MatPickTarget = (g_MatPickTarget==2) ? 0 : 2;
-        if (!mat.layer2TexturePath.empty()) {
-            ImGui::SameLine();
-            if (ImGui::Button("Clear##l2")) { mat.layer2TexturePath.clear(); mat.layer2TextureID = 0; }
-            ImGui::Text("L2 Tiling X:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-            ImGui::DragFloat("##l2tilex", &mat.layer2TilingX, 0.05f, 0.1f, 20.f, "%.2f");
-            ImGui::Text("L2 Tiling Y:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-            ImGui::DragFloat("##l2tiley", &mat.layer2TilingY, 0.05f, 0.1f, 20.f, "%.2f");
+        if (ImGui::Selectable("Sphere Collider")) {
+            if (!obj.hasCollider) { obj.hasCollider=true;
+                if (scene.IsAlive(obj.ecsID)) { VE::ColliderComponent c; c.Shape=(VE::ColliderComponent::ShapeType)1; c.Radius=obj.scale.x*0.5f; scene.registry.AddComponent<VE::ColliderComponent>(obj.ecsID)=c; }
+                logInfo("Sphere Collider -> "+obj.name);
+            } else logWarn("Already has Collider");
         }
-
-        ImGui::Spacing();
-        ImGui::Text("Mask:"); ImGui::SameLine(80);
-        if (mat.maskTexturePath.empty()) ImGui::TextColored(COL_DIM, "(none)");
-        else ImGui::TextColored(COL_GREEN, "%s", fs::path(mat.maskTexturePath).filename().string().c_str());
-        if (ImGui::Button(g_MatPickTarget==3 ? "Waiting for click..." : "Set Mask...", ImVec2(150,0)))
-            g_MatPickTarget = (g_MatPickTarget==3) ? 0 : 3;
-        if (!mat.maskTexturePath.empty()) {
-            ImGui::SameLine();
-            if (ImGui::Button("Clear##mask")) { mat.maskTexturePath.clear(); mat.maskTextureID = 0; }
+        if (ImGui::Selectable("Capsule Collider")) {
+            if (!obj.hasCollider) { obj.hasCollider=true;
+                if (scene.IsAlive(obj.ecsID)) { VE::ColliderComponent c; c.Shape=(VE::ColliderComponent::ShapeType)2; c.Radius=obj.scale.x*0.5f; c.Height=obj.scale.y; scene.registry.AddComponent<VE::ColliderComponent>(obj.ecsID)=c; }
+                logInfo("Capsule Collider -> "+obj.name);
+            } else logWarn("Already has Collider");
         }
-
-        if (g_MatPickTarget != 0) {
-            const char* tgtName = g_MatPickTarget==1?"Texture":g_MatPickTarget==2?"Layer 2":"Mask";
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.55f,0.85f,0.95f,1.f), "Double-click an image in the Project panel below to assign it as %s.", tgtName);
-            if (ImGui::Button("Cancel", ImVec2(-1,0))) g_MatPickTarget = 0;
-        }
-
-        if (!mat.layer2TexturePath.empty() && mat.maskTexturePath.empty() && mat.maskPixelSize==0)
-            ImGui::TextColored(ImVec4(1.f,0.75f,0.3f,1.f), "Layer 2 is set but has no mask yet — set a Mask above, or create a paintable one below.");
-
-        // ── Кисть: создать рисуемую маску и переключиться в Paint Mode ──
-        if (!mat.layer2TexturePath.empty()) {
-            ImGui::Spacing();
-            if (mat.maskPixelSize==0) {
-                if (ImGui::Button("Create Paintable Mask", ImVec2(-1,0))) {
-                    CreateBlankMask(mat, 256);
-                    UploadMaskTexture(mat);
-                    mat.maskTexturePath.clear();
-                    g_EditorMode = EditorMode::PaintMask;
-                }
-            } else {
-                ImGui::TextColored(COL_GREEN, "Paintable mask: %dx%d", mat.maskPixelSize, mat.maskPixelSize);
-                if (ImGui::Button(g_EditorMode==EditorMode::PaintMask ? "Stop Painting" : "Start Painting", ImVec2(-1,0)))
-                    g_EditorMode = (g_EditorMode==EditorMode::PaintMask) ? EditorMode::Object : EditorMode::PaintMask;
-                if (g_EditorMode==EditorMode::PaintMask)
-                    ImGui::TextColored(COL_DIM, "LMB on object — erase Layer2, Shift+LMB — restore it");
-                if (ImGui::Button("Save Mask to File...", ImVec2(-1,0))) {
-                    std::string outPath = projectRoot + "\\Assets\\Textures\\" +
-                        (mat.name.empty()?std::string("mask"):mat.name) + "_mask.pgm";
-                    SaveMaskPGM(outPath, mat.maskPixels, mat.maskPixelSize);
-                    mat.maskTexturePath = outPath;
-                    logInfo("Mask saved: "+outPath);
-                }
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Text("Roughness:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat("##rough", &mat.roughness, 0.01f, 0.f, 1.f, "%.2f");
-
-        ImGui::Text("Metallic:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat("##metal", &mat.metallic, 0.01f, 0.f, 1.f, "%.2f");
-
-        ImGui::Spacing();
-        ImGui::Text("Tiling X:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat("##tilex", &mat.tilingX, 0.05f, 0.1f, 20.f, "%.2f");
-        ImGui::Text("Tiling Y:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-        ImGui::DragFloat("##tiley", &mat.tilingY, 0.05f, 0.1f, 20.f, "%.2f");
-
-        ImGui::Spacing();
-        if (!mat.assetPath.empty()) {
-            ImGui::TextColored(COL_DIM, "Asset: %s", fs::path(mat.assetPath).filename().string().c_str());
-            if (ImGui::Button("Save Changes to Asset", ImVec2(-1,0))) {
-                SaveMaterial(mat.assetPath, mat);
-                logInfo("Saved material asset: "+fs::path(mat.assetPath).filename().string());
-            }
-        } else {
-            if (ImGui::Button("Save As Material Asset...", ImVec2(-1,0))) {
-                std::string matDir = projectRoot + "\\Assets";
-                std::string mp = matDir + "\\" + (mat.name.empty()?"NewMaterial":mat.name) + ".mat";
-                SaveMaterial(mp, mat);
-                mat.assetPath = mp;
-                logInfo("Saved as: "+fs::path(mp).filename().string());
-            }
-        }
-
-        // Сохраняем активную текстуру в obj.textureID/texturePath для рендера
-        // (рендер пока поддерживает один материал — основной/0)
-        if (obj.activeMaterial == 0) {
-            obj.texturePath = mat.texturePath;
-            obj.textureID   = mat.textureID;
-        }
-    } else { ImGui::PopStyleColor(2); }
-
-    // Rigidbody
-    if (obj.hasRigidBody && scene.registry.HasComponent<VE::RigidbodyComponent>(obj.ecsID)) {
-        auto& rb = scene.registry.GetComponent<VE::RigidbodyComponent>(obj.ecsID);
-        ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-        if (ImGui::CollapsingHeader("  Rigidbody", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PopStyleColor(2);
-            ImGui::Text("Mass:");          ImGui::SameLine(110); ImGui::SetNextItemWidth(-1); if(ImGui::DragFloat("##mass",&rb.Mass,0.1f,0.f,1000.f))obj.mass=rb.Mass;
-            ImGui::Text("Gravity Scale:"); ImGui::SameLine(110); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##gs",&rb.GravityScale,0.05f,-5.f,5.f);
-            ImGui::Text("Linear Drag:");   ImGui::SameLine(110); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##ld",&rb.LinearDrag,0.01f,0.f,10.f);
-            ImGui::Text("Angular Drag:");  ImGui::SameLine(110); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##ad",&rb.AngularDrag,0.01f,0.f,10.f);
-            ImGui::Text("Use Gravity:");   ImGui::SameLine(110); ImGui::Checkbox("##ug",&rb.UseGravity);
-            ImGui::Text("Is Kinematic:");  ImGui::SameLine(110); ImGui::Checkbox("##ik",&rb.IsKinematic);
-            HRule();
-            ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-            ImGui::Text("Freeze Position:");
-            ImGui::PopStyleColor();
-            ImGui::SameLine(); ImGui::Checkbox("X##fpx",&rb.FreezePositionX);
-            ImGui::SameLine(); ImGui::Checkbox("Y##fpy",&rb.FreezePositionY);
-            ImGui::SameLine(); ImGui::Checkbox("Z##fpz",&rb.FreezePositionZ);
-            ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-            ImGui::Text("Freeze Rotation:");
-            ImGui::PopStyleColor();
-            ImGui::SameLine(); ImGui::Checkbox("X##frx",&rb.FreezeRotationX);
-            ImGui::SameLine(); ImGui::Checkbox("Y##fry",&rb.FreezeRotationY);
-            ImGui::SameLine(); ImGui::Checkbox("Z##frz",&rb.FreezeRotationZ);
-            if (scene.registry.HasComponent<VE::ColliderComponent>(obj.ecsID)) {
-                auto& col=scene.registry.GetComponent<VE::ColliderComponent>(obj.ecsID);
-                HRule();
-                ImGui::TextColored(COL_ACCENT_HOV, "  Collider");
-                const char* shapes[]={"Box","Sphere","Capsule"};
-                int sh=(int)col.Shape;
-                ImGui::Text("Shape:"); ImGui::SameLine(110); ImGui::SetNextItemWidth(-1);
-                if(ImGui::Combo("##sh",&sh,shapes,3)) col.Shape=(VE::ColliderComponent::ShapeType)sh;
-                ImGui::Text("Is Trigger:"); ImGui::SameLine(110); ImGui::Checkbox("##tr",&col.IsTrigger);
-                ImGui::Text("Is Solid:");   ImGui::SameLine(110); ImGui::Checkbox("##so",&col.IsSolid);
-                ImGui::Text("Friction:");   ImGui::SameLine(110); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##fr",&col.Material.Friction,0.01f,0.f,1.f);
-                ImGui::Text("Bounciness:"); ImGui::SameLine(110); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##bn",&col.Material.Bounciness,0.01f,0.f,1.f);
-            }
-            HRule();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f,0.08f,0.08f,1.f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.50f,0.12f,0.12f,1.f));
-            if(ImGui::Button("Remove Rigidbody",ImVec2(-1,0))){
-                obj.hasRigidBody=false;
-                scene.registry.RemoveComponent<VE::RigidbodyComponent>(obj.ecsID);
-                scene.registry.RemoveComponent<VE::ColliderComponent>(obj.ecsID);
-            }
-            ImGui::PopStyleColor(2);
-        } else { ImGui::PopStyleColor(2); }
-    }
-
-    // Lua Scripts (можно несколько на объект) — показываем всегда, чтобы было куда перетащить
-    {
-        ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-        if (ImGui::CollapsingHeader("  Lua Scripts", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PopStyleColor(2);
-            if (obj.scriptPaths.empty()) ImGui::TextColored(COL_DIM, "  No scripts attached");
-            int removeIdx = -1;
-            for (int si=0; si<(int)obj.scriptPaths.size(); si++) {
-                ImGui::PushID(si);
-                ImGui::TextColored(COL_GREEN, "%s", fs::path(obj.scriptPaths[si]).filename().string().c_str());
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Edit")) openInVSCode(obj.scriptPaths[si]);
-                ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f,0.08f,0.08f,1.f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.50f,0.12f,0.12f,1.f));
-                if (ImGui::SmallButton("X")) removeIdx = si;
-                ImGui::PopStyleColor(2);
-                ImGui::PopID();
-            }
-            if (removeIdx>=0) {
-                obj.scriptPaths.erase(obj.scriptPaths.begin()+removeIdx);
-                obj.hasScript = !obj.scriptPaths.empty();
-            }
-
-            // ── Зона для перетаскивания .lua файла из Project — как в Unity ──
-            ImGui::Dummy(ImVec2(-1,4));
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f,0.10f,0.13f,1.f));
-            ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-            ImGui::Button("  Drop .lua script here  ", ImVec2(-1,28));
-            ImGui::PopStyleColor(2);
-            if (ImGui::BeginDragDropTarget()) {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCRIPT_PATH")) {
-                    std::string dropped((const char*)payload->Data);
-                    bool already=false;
-                    for(auto& sp:obj.scriptPaths) if(sp==dropped){ already=true; break; }
-                    if(!already){ obj.scriptPaths.push_back(dropped); obj.hasScript=true; }
-                }
-                ImGui::EndDragDropTarget();
-            }
-        } else { ImGui::PopStyleColor(2); }
-    }
-
-    HRule();
-    ImGui::Spacing();
-    // Add Component
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f,0.10f,0.22f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, COL_ACCENT);
-    ImGui::PushStyleColor(ImGuiCol_Text,          COL_ACCENT_HOV);
-    if (ImGui::Button("  +  Add Component  ", ImVec2(-1,28))) ImGui::OpenPopup("##addcomp");
-    ImGui::PopStyleColor(3);
-
-    if (ImGui::BeginPopup("##addcomp")) {
-        ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM); ImGui::Text("  Components"); ImGui::PopStyleColor();
         ImGui::Separator();
-        if (ImGui::MenuItem("  New Lua Script")) {
-            // Уникальное имя файла, чтобы не перезаписать чужой скрипт
-            std::string base = projectRoot+"\\Assets\\Scripts\\"+obj.name;
-            std::string newPath = base+".lua";
-            int suffix=1;
-            while (fs::exists(newPath)) { newPath = base+"_"+std::to_string(suffix)+".lua"; suffix++; }
-            obj.hasScript=true;
-            obj.scriptPaths.push_back(newPath);
-            scene.AttachScript(obj.ecsID,newPath);
-            openInVSCode(newPath);
-            logInfo("Script added: "+fs::path(newPath).filename().string());
+        ImGui::TextColored(COL_DIM, "  Light");
+        if (ImGui::Selectable("Point Light")) {
+            LightObject lo; lo.name=obj.name+"_Light"; lo.pos=obj.pos;
+            lo.color={1,1,1}; lo.intensity=10.f; lo.range=10.f;
+            lo.ecsID=scene.CreateEntity(lo.name);
+            scene.registry.AddComponent<VE::LightComponent>(lo.ecsID,lo.color,lo.intensity);
+            lights.push_back(lo);
+            logInfo("Point Light added at "+obj.name);
         }
-        if (!obj.hasRigidBody && ImGui::MenuItem("  Rigidbody")) {
-            obj.hasRigidBody=true;
-            auto& rb=scene.registry.AddComponent<VE::RigidbodyComponent>(obj.ecsID);
-            rb.Mass=obj.mass; rb.UseGravity=obj.useGravity;
-            auto& col=scene.registry.AddComponent<VE::ColliderComponent>(obj.ecsID);
-            col=VE::ColliderComponent::Box({obj.scale.x*0.5f,obj.scale.y*0.5f,obj.scale.z*0.5f});
-            logInfo("Rigidbody added to "+obj.name);
+        ImGui::Separator();
+        ImGui::TextColored(COL_DIM, "  Scripts (.lua)");
+        if (ImGui::Selectable("Lua Script...")) { s_wantNewScript=true; ImGui::CloseCurrentPopup(); }
+
+
+
+        ImGui::EndPopup();
+
+
+    }
+    if (s_wantNewScript) { ImGui::OpenPopup("##new_comp_script"); s_wantNewScript=false; }
+    if (ImGui::BeginPopupModal("##new_comp_script", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        static char nsBuf[128] = "NewScript";
+        ImGui::Text("Script name:");
+        ImGui::SetNextItemWidth(220);
+        ImGui::InputText("##ns_name", nsBuf, sizeof(nsBuf));
+        if (ImGui::Button("Create", ImVec2(100,0))) {
+            std::string name = nsBuf;
+            if (name.find(".lua")==std::string::npos) name += ".lua";
+            std::string dir = projectRoot + "\\Assets\\Scripts";
+            try { fs::create_directories(dir); } catch(...) {}
+            std::string sp = dir + "\\" + name;
+            std::ofstream f(sp);
+            f << "-- " << name << "\nfunction onStart()\nend\nfunction onUpdate(dt)\nend\n";
+            f.close();
+            bool has=false;
+            for(auto& s:obj.scriptPaths) if(s==sp){has=true;break;}
+            if(!has){ obj.scriptPaths.push_back(sp); obj.hasScript=true; }
+            logInfo("Created+added: "+name+" -> "+obj.name);
+            ImGui::CloseCurrentPopup();
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100,0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
-}
-else if (selType==SelectionType::None && !assetSelected.empty() &&
-         fs::path(assetSelected).extension()==".mat" && fs::exists(assetSelected)) {
-    // ── Просмотр/редактирование материала как отдельного ассета ──
-    static std::string s_LoadedMatPath;
-    static Material    s_EditMat;
-    if (s_LoadedMatPath != assetSelected) {
-        s_EditMat = LoadMaterial(assetSelected);
-        s_LoadedMatPath = assetSelected;
+    ImGui::Dummy(ImVec2(-1, 40));
+ImGui::PushStyleColor(ImGuiCol_DragDropTarget, ImVec4(0,0,0,0));
+if (ImGui::BeginDragDropTarget()) {
+    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SCRIPT_PATH")) {
+        std::string sp2((const char*)pl->Data, pl->DataSize-1);
+        bool already=false;
+        for(auto& s2:obj.scriptPaths) if(s2==sp2){ already=true; break; }
+        if(!already){ obj.scriptPaths.push_back(sp2); obj.hasScript=true;
+            logInfo("Script -> "+obj.name); }
     }
-
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f,0.85f,0.90f,1.f));
-    ImGui::Text("  Material Asset");
-    ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-    ImGui::Text("  %s", fs::path(assetSelected).filename().string().c_str());
-    ImGui::PopStyleColor();
-    HRule();
-
-    // Превью сферы
-    ImVec2 prevCenter = ImGui::GetCursorScreenPos();
-    prevCenter.x += ImGui::GetContentRegionAvail().x*0.5f - 24.f; prevCenter.y += 40.f;
-    auto* dlp = ImGui::GetWindowDrawList();
-    ImU32 sCol = IM_COL32((int)(s_EditMat.color.r*255),(int)(s_EditMat.color.g*255),(int)(s_EditMat.color.b*255),255);
-    dlp->AddCircleFilled(prevCenter, 40.f, sCol, 32);
-    dlp->AddCircleFilled(ImVec2(prevCenter.x-14,prevCenter.y-14), 10.f, IM_COL32(255,255,255,140), 16);
-    ImGui::Dummy(ImVec2(0, 90));
-
-    ImGui::Text("Name:"); ImGui::SameLine(90);
-    static char s_AssetMatName[64];
-    strncpy_s(s_AssetMatName, s_EditMat.name.c_str(), sizeof(s_AssetMatName)-1);
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::InputText("##assetmatname", s_AssetMatName, sizeof(s_AssetMatName)))
-        s_EditMat.name = s_AssetMatName;
-
-    ImGui::Text("Color:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-    ImGui::ColorEdit3("##assetmatcol", glm::value_ptr(s_EditMat.color));
-
-    ImGui::Text("Texture:"); ImGui::SameLine(90);
-    if (s_EditMat.texturePath.empty()) ImGui::TextColored(COL_DIM, "None");
-    else ImGui::TextColored(COL_GREEN, "%s", fs::path(s_EditMat.texturePath).filename().string().c_str());
-
-    ImGui::Spacing();
-    ImGui::Text("Roughness:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-    ImGui::DragFloat("##assetrough", &s_EditMat.roughness, 0.01f, 0.f, 1.f, "%.2f");
-    ImGui::Text("Metallic:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-    ImGui::DragFloat("##assetmetal", &s_EditMat.metallic, 0.01f, 0.f, 1.f, "%.2f");
-
-    ImGui::Spacing();
-    ImGui::Text("Tiling X:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-    ImGui::DragFloat("##assettilex", &s_EditMat.tilingX, 0.05f, 0.1f, 20.f, "%.2f");
-    ImGui::Text("Tiling Y:"); ImGui::SameLine(90); ImGui::SetNextItemWidth(-1);
-    ImGui::DragFloat("##assettiley", &s_EditMat.tilingY, 0.05f, 0.1f, 20.f, "%.2f");
-
-    ImGui::Spacing(); ImGui::Spacing();
-    if (ImGui::Button("Save Material", ImVec2(-1,0))) {
-        SaveMaterial(assetSelected, s_EditMat);
-        logInfo("Saved: "+fs::path(assetSelected).filename().string());
-    }
-    ImGui::TextColored(COL_DIM, "Drag this material onto an object\nin the Scene or Hierarchy to apply it.");
+    ImGui::EndDragDropTarget();
 }
-else if (selType==SelectionType::Environment) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f,0.85f,0.4f,1.f));
-    ImGui::Text("  Lighting"); ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, COL_DIM);
-    ImGui::Text("  Scene-wide environment settings");
-    ImGui::PopStyleColor();
-    HRule();
-
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if (ImGui::CollapsingHeader("  Sky & Time", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PopStyleColor(2);
-        int hh=(int)g_TimeOfDay, mm=(int)((g_TimeOfDay-hh)*60.f);
-        ImGui::Text("Time of Day: %02d:%02d", hh, mm);
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("##tod", &g_TimeOfDay, 0.0f, 24.0f, "");
-        if (ImGui::Button("Dawn",    ImVec2(58,0))) g_TimeOfDay=6.0f;  ImGui::SameLine();
-        if (ImGui::Button("Noon",    ImVec2(58,0))) g_TimeOfDay=12.0f; ImGui::SameLine();
-        if (ImGui::Button("Dusk",    ImVec2(58,0))) g_TimeOfDay=18.0f; ImGui::SameLine();
-        if (ImGui::Button("Midnight",ImVec2(74,0))) g_TimeOfDay=0.0f;
-    } else { ImGui::PopStyleColor(2); }
-
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if (ImGui::CollapsingHeader("  Sun & Ambient", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PopStyleColor(2);
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("Sun Intensity", &g_SunIntensity, 0.0f, 2.0f, "%.2f");
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("Ambient", &g_AmbientStrength, 0.0f, 0.5f, "%.2f");
-        ImGui::TextColored(COL_DIM, "Sun follows Time of Day above —\nfades out automatically at night.");
-    } else { ImGui::PopStyleColor(2); }
-
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if (ImGui::CollapsingHeader("  Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PopStyleColor(2);
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("Density", &g_FogDensity, 0.0f, 1.0f, "%.2f");
-        ImGui::ColorEdit3("Color", (float*)&g_FogColor);
-    } else { ImGui::PopStyleColor(2); }
-
-    ImGui::Spacing();
-    ImGui::TextColored(COL_DIM, "Tip: control this from Lua with\nEnvironment.SetTimeOfDay(hours)\nto animate a day/night cycle.");
-}
-else if (selType==SelectionType::Light && selLight>=0 && selLight<(int)lights.size()) {
-    auto& l=lights[selLight];
-    ImGui::Checkbox("##la",&l.active); ImGui::SameLine();
-    static char lb[64]; strncpy_s(lb,l.name.c_str(),sizeof(lb)-1);
-    ImGui::SetNextItemWidth(-1); if(ImGui::InputText("##ln",lb,sizeof(lb)))l.name=lb;
-    ImGui::TextColored(COL_LIGHT_OBJ,"  Point Light"); HRule();
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if(ImGui::CollapsingHeader("  Transform",ImGuiTreeNodeFlags_DefaultOpen)){
-        ImGui::PopStyleColor(2);
-        ImGui::Text("Position"); ImGui::SameLine(70);
-        ImGui::PushStyleColor(ImGuiCol_Text,COL_RED_X);   ImGui::Text("X"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##lpx",&l.pos.x,0.05f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text,COL_GREEN_Y); ImGui::Text("Y"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(60); ImGui::DragFloat("##lpy",&l.pos.y,0.05f); ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Text,COL_BLUE_Z);  ImGui::Text("Z"); ImGui::PopStyleColor(); ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##lpz",&l.pos.z,0.05f);
-    } else { ImGui::PopStyleColor(2); }
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if(ImGui::CollapsingHeader("  Light",ImGuiTreeNodeFlags_DefaultOpen)){
-        ImGui::PopStyleColor(2);
-        ImGui::Text("Color:");     ImGui::SameLine(80); ImGui::SetNextItemWidth(-1); ImGui::ColorEdit3("##lc",glm::value_ptr(l.color));
-        ImGui::Text("Intensity:"); ImGui::SameLine(80); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##li",&l.intensity,0.05f,0.f,10.f);
-        ImGui::Text("Range:");     ImGui::SameLine(80); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##lr",&l.range,0.1f,0.1f,100.f);
-    } else { ImGui::PopStyleColor(2); }
-}
-else if (selType==SelectionType::Camera && selCamera>=0 && selCamera<(int)sceneCameras.size()) {
-    auto& cam=sceneCameras[selCamera];
-    ImGui::Checkbox("##ca",&cam.active); ImGui::SameLine();
-    static char cb[64]; strncpy_s(cb,cam.name.c_str(),sizeof(cb)-1);
-    ImGui::SetNextItemWidth(-1); if(ImGui::InputText("##cn",cb,sizeof(cb)))cam.name=cb;
-    ImGui::TextColored(COL_CAM_OBJ,"  Camera"); HRule();
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if(ImGui::CollapsingHeader("  Transform",ImGuiTreeNodeFlags_DefaultOpen)){
-        ImGui::PopStyleColor(2);
-        if(cam.followTargetIndex>=0 && cam.followTargetIndex<(int)objects.size()){
-            glm::vec3 livePos = objects[cam.followTargetIndex].pos + cam.followOffset;
-            ImGui::TextColored(COL_DIM,"Position (live, follows target):");
-            ImGui::Text("  %.2f, %.2f, %.2f", livePos.x, livePos.y, livePos.z);
-            ImGui::TextColored(COL_DIM,"Edit \"Offset\" below to reposition the camera");
-        } else {
-            ImGui::Text("Position"); ImGui::SameLine(70);
-            ImGui::PushStyleColor(ImGuiCol_Text,COL_RED_X);   ImGui::Text("X"); ImGui::PopStyleColor(); ImGui::SameLine();
-            ImGui::SetNextItemWidth(60); if(ImGui::DragFloat("##cpx",&cam.pos.x,0.05f))gameCamera.Position=cam.pos; ImGui::SameLine(0,4);
-            ImGui::PushStyleColor(ImGuiCol_Text,COL_GREEN_Y); ImGui::Text("Y"); ImGui::PopStyleColor(); ImGui::SameLine();
-            ImGui::SetNextItemWidth(60); if(ImGui::DragFloat("##cpy",&cam.pos.y,0.05f))gameCamera.Position=cam.pos; ImGui::SameLine(0,4);
-            ImGui::PushStyleColor(ImGuiCol_Text,COL_BLUE_Z);  ImGui::Text("Z"); ImGui::PopStyleColor(); ImGui::SameLine();
-            ImGui::SetNextItemWidth(-1); if(ImGui::DragFloat("##cpz",&cam.pos.z,0.05f))gameCamera.Position=cam.pos;
-        }
-    } else { ImGui::PopStyleColor(2); }
-    ImGui::PushStyleColor(ImGuiCol_Header,       ImVec4(0.12f,0.09f,0.20f,1.f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f,0.13f,0.30f,1.f));
-    if(ImGui::CollapsingHeader("  Camera",ImGuiTreeNodeFlags_DefaultOpen)){
-        ImGui::PopStyleColor(2);
-        ImGui::Text("FOV:");     ImGui::SameLine(80); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##fov",&cam.fov,0.5f,10.f,120.f);
-        ImGui::Text("Primary:"); ImGui::SameLine(80); ImGui::Checkbox("##pri",&cam.isPrimary);
-        ImGui::Separator();
-        ImGui::Text("Follow Target:");
-        std::string curName = (cam.followTargetIndex>=0 && cam.followTargetIndex<(int)objects.size())
-                               ? objects[cam.followTargetIndex].name : "None (free fly)";
-        ImGui::SetNextItemWidth(-1);
-        if(ImGui::BeginCombo("##followTarget", curName.c_str())){
-            if(ImGui::Selectable("None (free fly)", cam.followTargetIndex==-1)) cam.followTargetIndex=-1;
-            for(int oi=0; oi<(int)objects.size(); oi++){
-                bool isSelObj = (cam.followTargetIndex==oi);
-                if(ImGui::Selectable(objects[oi].name.c_str(), isSelObj)) cam.followTargetIndex=oi;
-            }
+ImGui::PopStyleColor();
+} else if (selType==SelectionType::Light && selLight>=0 && selLight<(int)lights.size()) {
+    LightObject& l = lights[selLight];
+    ImGui::TextColored(ImVec4(1,1,.3f,1.f), "%s (Light)", l.name.c_str());
+    ImGui::Separator();
+    ImGui::DragFloat3("Position", &l.pos.x, 0.1f);
+    ImGui::ColorEdit3("Color", &l.color.r);
+    ImGui::DragFloat("Intensity", &l.intensity, 0.1f, 0.f, 100.f);
+} else if (selType==SelectionType::Camera && selCamera>=0 && selCamera<(int)sceneCameras.size()) {
+    CameraObject& cam = sceneCameras[selCamera];
+    ImGui::TextColored(ImVec4(.3f,1.f,.5f,1.f), "%s (Camera)", cam.name.c_str());
+    ImGui::Separator();
+    ImGui::DragFloat3("Position", &cam.pos.x, 0.05f);
+    ImGui::DragFloat("FOV", &cam.fov, 0.5f, 10.f, 120.f);
+    ImGui::Checkbox("Primary", &cam.isPrimary);
+} else if (selUI>=0 && selUI<(int)uiElements.size()) {
+    UIElement& u = uiElements[selUI];
+    ImGui::TextColored(ImVec4(0.95f,0.5f,0.8f,1.f), "%s (UI)", u.name.c_str());
+    ImGui::Separator();
+    static char uiNameBuf[128]; static int uiNameIdx=-1;
+    if (uiNameIdx!=selUI) { strncpy_s(uiNameBuf, u.name.c_str(), 127); uiNameIdx=selUI; }
+    if (ImGui::InputText("Name", uiNameBuf, 128)) u.name = uiNameBuf;
+    ImGui::DragFloat2("Anchor (0..1)", &u.anchor.x, 0.005f, 0.f, 1.f);
+    ImGui::DragFloat2("Size (px)", &u.size.x, 1.f, 1.f, 4000.f);
+        if (ImGui::BeginCombo("Parent", (u.parentIndex>=0 && u.parentIndex<(int)uiElements.size()) ? uiElements[u.parentIndex].name.c_str() : "None (Canvas)")) {
+            if (ImGui::Selectable("None (Canvas)", u.parentIndex<0)) u.parentIndex=-1;
+            for (int pi2=0; pi2<(int)uiElements.size(); pi2++) { if (pi2==selUI) continue;
+                if (ImGui::Selectable(uiElements[pi2].name.c_str(), u.parentIndex==pi2)) u.parentIndex=pi2; }
             ImGui::EndCombo();
         }
-        if(cam.followTargetIndex>=0){
-            ImGui::Text("Offset:"); ImGui::SameLine(70);
-            ImGui::SetNextItemWidth(60); ImGui::DragFloat("##fox",&cam.followOffset.x,0.05f); ImGui::SameLine(0,4);
-            ImGui::SetNextItemWidth(60); ImGui::DragFloat("##foy",&cam.followOffset.y,0.05f); ImGui::SameLine(0,4);
-            ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##foz",&cam.followOffset.z,0.05f);
-            ImGui::TextColored(COL_DIM,"Camera follows this object's position & rotation in Play mode");
+        ImGui::DragFloat2("Offset (px)", &u.posOffset.x, 1.f, -4000.f, 4000.f);
+        ImGui::DragFloat2("Size Scale", &u.sizeScale.x, 0.005f, 0.f, 1.f);
+        ImGui::DragFloat2("Pivot", &u.anchorPoint.x, 0.005f, 0.f, 1.f);
+        ImGui::SliderFloat("Rounding", &u.cornerRadius, 0.f, 40.f, "%.0f");
+        ImGui::SliderFloat("Transparency", &u.transparency, 0.f, 1.f);
+        if (u.type==UIElement::Type::Image || u.type==UIElement::Type::Button) {
+            static char uiTexBuf[256]; static int uiTexIdx=-1;
+            if (uiTexIdx!=selUI) { strncpy_s(uiTexBuf, u.texPath.c_str(), 255); uiTexBuf[255]=0; uiTexIdx=selUI; }
+            ImGui::InputText("Texture", uiTexBuf, 256);
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) {
+                u.texPath = uiTexBuf;
+                fs::path fp = u.texPath;
+                if (fp.is_relative()) fp = fs::path(projectRoot) / u.texPath;
+                GLuint t = VE::LoadTextureRaw(fp.string());
+                if (t) { u.tex = t; logInfo("UI texture loaded: "+u.name); } else logError("UI texture failed: "+fp.string());
+            }
         }
-    } else { ImGui::PopStyleColor(2); }
-}
-else {
-    ImGui::Spacing(); ImGui::Spacing();
+    ImGui::ColorEdit4("Color", &u.color.r);
+    if (u.type!=UIElement::Type::Image) {
+        static char uiTxtBuf[256]; static int uiTxtIdx=-1;
+        if (uiTxtIdx!=selUI) { strncpy_s(uiTxtBuf, u.text.c_str(), 255); uiTxtIdx=selUI; }
+        if (ImGui::InputText("Text", uiTxtBuf, 256)) u.text = uiTxtBuf;
+        ImGui::DragFloat("Font Size", &u.fontSize, 0.5f, 6.f, 72.f);
+    }
+    ImGui::DragInt("Z", &u.z);
+    ImGui::Checkbox("Visible", &u.visible);
+    ImGui::Checkbox("Hover FX", &u.fx);
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* tp =
+            ImGui::AcceptDragDropPayload(
+            "TEXTURE_PATH")) {
+            std::string tp2(
+                (const char*)tp->Data,
+                tp->DataSize-1);
+            UI_TexPick(selUI, tp2);
+        }
+        ImGui::EndDragDropTarget();
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* tp =
+            ImGui::AcceptDragDropPayload(
+            "TEXTURE_PATH")) {
+            std::string tp2(
+                (const char*)tp->Data,
+                tp->DataSize-1);
+            UI_TexPick(selUI, tp2);
+        }
+        ImGui::EndDragDropTarget();
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* tp = ImGui::AcceptDragDropPayload("TEXTURE_PATH")) {
+            std::string texPath((const char*)tp->Data, tp->DataSize-1);
+            GLuint t = VE::LoadTextureRaw(texPath);
+            if (t) { u.tex = t; u.texPath = texPath; logInfo("Texture -> "+u.name); }
+        }
+        ImGui::EndDragDropTarget();
+    }
+} else {
     float tw = ImGui::GetContentRegionAvail().x;
     ImGui::SetCursorPosX((tw - ImGui::CalcTextSize("Nothing selected").x)*0.5f);
     ImGui::TextColored(COL_DIM, "Nothing selected");
     ImGui::Spacing();
     ImGui::SetCursorPosX((tw - ImGui::CalcTextSize("Click an object in the Outliner").x)*0.5f);
-    ImGui::TextColored(ImVec4(0.28f,0.24f,0.36f,1.f),"Click an object in the Outliner");
+    ImGui::TextColored(ImVec4(0.28f,0.29f,0.32f,1.f),"Click an object in the Outliner");
 }
+
 ImGui::End();
 ImGui::PopStyleColor();
 
-// ───────────────────────────────────────────────────────
+
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 //   BOTTOM PANEL (Console / Project / Animation)
-// ───────────────────────────────────────────────────────
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.078f,0.086f,0.098f,1.f));
 ImGui::Begin("Bottom##bottom", nullptr, ImGuiWindowFlags_NoCollapse);
 
 if (ImGui::BeginTabBar("##btabs")) {
-    // ── Console ──
-    if (ImGui::BeginTabItem("  Console")) {
-        ImGui::SameLine(0,8);
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f,0.10f,0.18f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f,0.15f,0.38f,1.f));
-        if(ImGui::SmallButton(" Clear ")) consoleLog.clear();
-        ImGui::PopStyleColor(2);
-        HRule();
-
-        // Лог — оставляем место для строки ввода внизу (24px)
-        float logH = ImGui::GetContentRegionAvail().y - 28.f;
-        if (ImGui::BeginChild("##clog", ImVec2(-1, logH))) {
-            for (auto& e : consoleLog) {
-                ImVec4 col = e.level==2 ? ImVec4(1.f,.35f,.35f,1.f)
-                           : e.level==1 ? ImVec4(1.f,.80f,.25f,1.f)
-                           : e.level==3 ? ImVec4(0.55f,0.90f,1.f,1.f)   // CMD echo
-                           :              ImVec4(.78f,.75f,.88f,1.f);
-                const char* pfx = e.level==2?"  [ERR] ":e.level==1?"  [WRN] ":e.level==3?"  >  ":"  [INF] ";
-                ImGui::TextColored(col, "%s%s", pfx, e.msg.c_str());
+    // в”Ђв”Ђ Console в”Ђв”Ђ
+if (ImGui::BeginTabItem("  Console")) {
+    static bool s_Collapse=false;
+    static bool s_ShowInfo=true, s_ShowWarn=true, s_ShowErr=true;
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.15f,0.17f,1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f,0.26f,0.30f,1.f));
+    if (ImGui::SmallButton(" Clear ")) consoleLog.clear();
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine(0,8);
+    ImGui::Checkbox("Collapse", &s_Collapse);
+    ImGui::SameLine(0,16);
+    float logH = ImGui::GetContentRegionAvail().y - 28.f;
+    if (ImGui::BeginChild("##clog", ImVec2(-1, logH))) {
+        for (size_t i=0;i<consoleLog.size();i++) {
+            auto& e = consoleLog[i];
+            bool show = (e.level==2)?s_ShowErr:(e.level==1)?s_ShowWarn:s_ShowInfo;
+            if (!show) continue;
+            int run=1;
+            if (s_Collapse) {
+                if (i>0 && consoleLog[i-1].msg==e.msg && consoleLog[i-1].level==e.level) continue;
+                for (size_t j=i+1;j<consoleLog.size() && consoleLog[j].msg==e.msg && consoleLog[j].level==e.level;j++) run++;
             }
-            if(ImGui::GetScrollY()>=ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.f);
+            ImVec4 col = e.level==2 ? ImVec4(1.f,.35f,.35f,1.f)
+                       : e.level==1 ? ImVec4(1.f,.80f,.25f,1.f)
+                       : e.level==3 ? ImVec4(0.55f,0.90f,1.f,1.f)
+                       :              ImVec4(.78f,.75f,.88f,1.f);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 ic(p.x+8, p.y+ImGui::GetTextLineHeight()*0.5f+1);
+            ImU32 icCol = e.level==2?IM_COL32(220,60,60,255):e.level==1?IM_COL32(230,180,40,255):IM_COL32(80,160,220,255);
+            dl->AddCircleFilled(ic, 6.f, icCol, 16);
+            const char* ch = e.level==2?"x":e.level==1?"!":"i";
+            ImVec2 ts = ImGui::CalcTextSize(ch);
+            dl->AddText(ImVec2(ic.x-ts.x*0.5f, ic.y-ts.y*0.5f), IM_COL32(255,255,255,255), ch);
+            ImGui::Dummy(ImVec2(20,0));
+            ImGui::SameLine(0,0);
+            if (run>1) ImGui::TextColored(col, "%s  (x%d)", e.msg.c_str(), run);
+            else       ImGui::TextColored(col, "%s", e.msg.c_str());
         }
-        ImGui::EndChild();
-
-        // ── Строка ввода команд ──
-        HRule();
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f,0.07f,0.12f,1.f));
-        ImGui::PushItemWidth(-60.f);
-        bool enterPressed = false;
-
-        // Колбэк для истории команд (стрелки вверх/вниз)
-        struct CmdCallback {
-            static int cb(ImGuiInputTextCallbackData* d) {
-                if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
-                    if (g_CmdHistory.empty()) return 0;
-                    if (d->EventKey == ImGuiKey_UpArrow) {
-                        if (g_CmdHistoryIdx < (int)g_CmdHistory.size()-1) g_CmdHistoryIdx++;
-                    } else if (d->EventKey == ImGuiKey_DownArrow) {
-                        if (g_CmdHistoryIdx > -1) g_CmdHistoryIdx--;
-                    }
-                    std::string val = g_CmdHistoryIdx >= 0 ? g_CmdHistory[g_CmdHistoryIdx] : "";
-                    d->DeleteChars(0, d->BufTextLen);
-                    d->InsertChars(0, val.c_str());
-                }
-                return 0;
-            }
-        };
-
-        if (g_ConsoleFocusInput) { ImGui::SetKeyboardFocusHere(); g_ConsoleFocusInput=false; }
-        if (ImGui::InputText("##cmd", g_CmdBuf, sizeof(g_CmdBuf),
-            ImGuiInputTextFlags_EnterReturnsTrue |
-            ImGuiInputTextFlags_CallbackHistory,
-            CmdCallback::cb)) {
-            enterPressed = true;
-        }
-        ImGui::PopItemWidth();
-        ImGui::PopStyleColor();
-        ImGui::SameLine(0,4);
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.22f,0.14f,0.38f,1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.38f,0.24f,0.60f,1.f));
-        if (ImGui::SmallButton(" Run ")) enterPressed = true;
-        ImGui::PopStyleColor(2);
-
-        if (enterPressed && g_CmdBuf[0] != '\0') {
-            std::string cmd = g_CmdBuf;
-            consoleLog.push_back({cmd, 3}); // echo cyan
-            g_CmdHistory.insert(g_CmdHistory.begin(), cmd);
-            if (g_CmdHistory.size() > 50) g_CmdHistory.pop_back();
-            g_CmdHistoryIdx = -1;
-            memset(g_CmdBuf, 0, sizeof(g_CmdBuf));
-            g_ConsoleFocusInput = true;
-
-            // ── Парсинг команды ──
-            std::istringstream ss(cmd);
-            std::string token; std::vector<std::string> args;
-            while (ss >> token) args.push_back(token);
-            std::string c = args.empty() ? "" : args[0];
-
-            // help
-            if (c=="help") {
-                logInfo("Commands:");
-                logInfo("  mkdir <path>           — create folder");
-                logInfo("  ls / dir [path]        — list files");
-                logInfo("  echo <text>            — print text");
-                logInfo("  clear                  — clear console");
-                logInfo("  list objects           — all scene objects");
-                logInfo("  list lights            — all lights");
-                logInfo("  select <name>          — select object");
-                logInfo("  move <x> <y> <z>       — move selected");
-                logInfo("  color <r> <g> <b>      — set color (0..1)");
-                logInfo("  delete                 — delete selected");
-                logInfo("  spawn cube/sphere/plane <name> — create object");
-                logInfo("  volume <0..1>          — audio volume");
-                logInfo("  play <path>            — play sound");
-                logInfo("  fps                    — show FPS");
-                logInfo("  scene save             — save scene");
-                logInfo("  scene load <path>      — load scene file");
-                logInfo("  scene reload           — reload current scene");
-                logInfo("  scene current          — show current scene path");
-            }
-            // clear
-            else if (c=="clear") { consoleLog.clear(); }
-            // echo
-            else if (c=="echo") {
-                std::string out; for(int i=1;i<(int)args.size();i++) out+=args[i]+" ";
-                logInfo(out);
-            }
-            // fps
-            else if (c=="fps") {
-                logInfo("FPS: "+std::to_string((int)io.Framerate));
-            }
-            // mkdir
-            else if (c=="mkdir" && args.size()>=2) {
-                try {
-                    fs::path p = args[1];
-                    if (p.is_relative()) p = fs::path(projectRoot) / p;
-                    fs::create_directories(p);
-                    logInfo("Created: "+p.string());
-                } catch(const std::exception& ex){ logError(ex.what()); }
-            }
-            // ls / dir
-            else if ((c=="ls"||c=="dir")) {
-                fs::path p = args.size()>=2 ? fs::path(args[1]) : fs::path(std::string(assetCurrentPath));
-                if (p.is_relative()) p = fs::path(projectRoot) / p;
-                try {
-                    for (auto& e : fs::directory_iterator(p)) {
-                        std::string _pfx = e.is_directory() ? "[dir] " : "      ";
-                        logInfo("  " + _pfx + e.path().filename().string());
-                    }
-                } catch(...){ logError("Folder not found: "+p.string()); }
-            }
-            // list objects
-            else if (c=="list" && args.size()>=2 && args[1]=="objects") {
-                if (objects.empty()) logInfo("No objects");
-                for(int i=0;i<(int)objects.size();i++)
-                    logInfo("  ["+std::to_string(i)+"] "+objects[i].name+
-                        " pos("+std::to_string((int)objects[i].pos.x)+","+
-                        std::to_string((int)objects[i].pos.y)+","+
-                        std::to_string((int)objects[i].pos.z)+")");
-            }
-            // list lights
-            else if (c=="list" && args.size()>=2 && args[1]=="lights") {
-                if (lights.empty()) logInfo("No lights");
-                for(int i=0;i<(int)lights.size();i++)
-                    logInfo("  ["+std::to_string(i)+"] "+lights[i].name);
-            }
-            // select <name>
-            else if (c=="select" && args.size()>=2) {
-                bool found=false;
-                for(int i=0;i<(int)objects.size();i++){
-                    if(objects[i].name==args[1]){ sel=i; selType=SelectionType::Object; found=true;
-                        logInfo("Selected: "+objects[i].name); break; }
-                }
-                if(!found) logWarn("Object not found: "+args[1]);
-            }
-            // move <x> <y> <z>
-            else if (c=="move" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
-                objects[sel].pos={std::stof(args[1]),std::stof(args[2]),std::stof(args[3])};
-                logInfo("Moved: "+objects[sel].name);
-            }
-            // color <r> <g> <b>
-            else if (c=="color" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
-                objects[sel].color={std::stof(args[1]),std::stof(args[2]),std::stof(args[3])};
-                logInfo("Color changed: "+objects[sel].name);
-            }
-            // delete
-            else if (c=="delete" && selType==SelectionType::Object && sel>=0) {
-                logInfo("Deleted: "+objects[sel].name);
-                if(scene.IsAlive(objects[sel].ecsID)) scene.DestroyEntity(objects[sel].ecsID);
-                objects.erase(objects.begin()+sel);
-                if(sel>=(int)objects.size()) sel=(int)objects.size()-1;
-            }
-            // spawn <type> [name]
-            else if (c=="spawn" && args.size()>=2) {
-                PrimitiveType pt=PrimitiveType::Cube;
-                if(args[1]=="sphere")   pt=PrimitiveType::Sphere;
-                else if(args[1]=="plane")  pt=PrimitiveType::Plane;
-                else if(args[1]=="cylinder") pt=PrimitiveType::Cylinder;
-                else if(args[1]=="capsule")  pt=PrimitiveType::Capsule;
-                else if(args[1]=="pyramid")  pt=PrimitiveType::Pyramid;
-                SceneObject o; o.name=args.size()>=3?args[2]:(args[1]+"_"+std::to_string(objects.size()+1));
-                o.type=pt; o.pos={0,0.5f,0}; o.color={0.8f,0.6f,0.3f};
-                o.ecsID=scene.CreateEntity(o.name);
-                scene.GetTransform(o.ecsID).Position=o.pos;
-                scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
-                objects.push_back(o); sel=(int)objects.size()-1; selType=SelectionType::Object;
-                logInfo("Spawned: "+o.name);
-            }
-            // volume <v>
-            else if (c=="volume" && args.size()>=2) {
-                float v=std::stof(args[1]);
-                VE::AudioEngine::Get().SetMasterVolume(v);
-                logInfo("Volume: "+std::to_string(v));
-            }
-            // play <path>
-            else if (c=="play" && args.size()>=2) {
-                VE::AudioEngine::Get().PlaySound(args[1]);
-                logInfo("Playing: "+args[1]);
-            }
-            // scene save / load / reload
-            else if (c=="scene" && args.size()>=2 && args[1]=="save") {
-                if(currentScenePath.empty()) currentScenePath=projectRoot+"\\Assets\\Scenes\\scene.vescene";
-                SaveScene(currentScenePath,objects,lights,sceneCameras);
-                logInfo("Scene saved: "+currentScenePath);
-            }
-            else if (c=="scene" && args.size()>=3 && args[1]=="load") {
-                VE::SceneManager::Get().RequestLoad(args[2]);
-                logInfo("Loading scene: "+args[2]);
-            }
-            else if (c=="scene" && args.size()>=2 && args[1]=="reload") {
-                VE::SceneManager::Get().RequestReload();
-                logInfo("Reloading scene...");
-            }
-            else if (c=="scene" && args.size()>=2 && args[1]=="current") {
-                logInfo("Current: "+VE::SceneManager::Get().GetCurrent());
-            }
-            else {
-                logWarn("Unknown command: "+c+" (type 'help')");
-            }
-        }
-
-        ImGui::EndTabItem();
+        if (ImGui::GetScrollY()>=ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.f);
     }
-    // ── Project ──
-    if (ImGui::BeginTabItem("  Project")) {
-        // Drag&drop
+    ImGui::EndChild();
+    HRule();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f,0.09f,0.11f,1.f));
+    ImGui::TextColored(ImVec4(0.50f,0.52f,0.58f,1.f), ">");
+    ImGui::SameLine(0,4);
+    ImGui::PushItemWidth(-60.f);
+    bool enterPressed = false;
+    struct CmdCallback {
+        static int cb(ImGuiInputTextCallbackData* d) {
+            if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
+                if (g_CmdHistory.empty()) return 0;
+                if (d->EventKey == ImGuiKey_UpArrow) { if (g_CmdHistoryIdx < (int)g_CmdHistory.size()-1) g_CmdHistoryIdx++; }
+                else if (d->EventKey == ImGuiKey_DownArrow) { if (g_CmdHistoryIdx > -1) g_CmdHistoryIdx--; }
+                std::string val = g_CmdHistoryIdx >= 0 ? g_CmdHistory[g_CmdHistoryIdx] : "";
+                d->DeleteChars(0, d->BufTextLen);
+                d->InsertChars(0, val.c_str());
+            }
+            return 0;
+        }
+    };
+    if (g_ConsoleFocusInput) { ImGui::SetKeyboardFocusHere(); g_ConsoleFocusInput=false; }
+    if (ImGui::InputTextWithHint("##cmd", "help", g_CmdBuf, sizeof(g_CmdBuf),
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory,
+        CmdCallback::cb)) {
+        enterPressed = true;
+    }
+    ImGui::PopItemWidth();
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0,4);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f,0.17f,0.20f,1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.42f,0.44f,0.48f,1.f));
+    if (ImGui::Button("Run", ImVec2(56,0))) enterPressed = true;
+    ImGui::PopStyleColor(2);
+    if (enterPressed && g_CmdBuf[0] != '\0') {
+        std::string cmd = g_CmdBuf;
+        consoleLog.push_back({cmd, 3});
+        g_CmdHistory.insert(g_CmdHistory.begin(), cmd);
+        if (g_CmdHistory.size() > 50) g_CmdHistory.pop_back();
+        g_CmdHistoryIdx = -1;
+        memset(g_CmdBuf, 0, sizeof(g_CmdBuf));
+        g_ConsoleFocusInput = true;
+        std::istringstream ss(cmd);
+        std::string token; std::vector<std::string> args;
+        while (ss >> token) args.push_back(token);
+        std::string c = args.empty() ? "" : args[0];
+        if (c=="help") {
+            logInfo("Commands: help, clear, echo, fps, ls, mkdir, list objects|lights,");
+            logInfo("  select <name>, create <type>, move/scale <name> x y z,");
+            logInfo("  rename <n>, color r g b, delete <name>, spawn <type>,");
+            logInfo("  volume <0..1>, play <path>, time/sun/ambient <v>,");
+            logInfo("  scene save|load <path>|reload|current");
+        }
+        else if (c=="clear") consoleLog.clear();
+        else if (c=="echo") { std::string out; for(size_t i=1;i<args.size();i++) out+=args[i]+" "; logInfo(out); }
+        else if (c=="fps") logInfo("FPS: "+std::to_string((int)io.Framerate));
+        else if (c=="mkdir" && args.size()>=2) {
+            try { fs::path p=args[1]; if(p.is_relative()) p=fs::path(projectRoot)/p; fs::create_directories(p); logInfo("Created: "+p.string()); } catch(const std::exception& ex){ logError(ex.what()); }
+        }
+        else if (c=="ls"||c=="dir") {
+            fs::path p = args.size()>=2 ? fs::path(args[1]) : fs::path(assetCurrentPath);
+            if (p.is_relative()) p = fs::path(projectRoot)/p;
+            try { for (auto& e : fs::directory_iterator(p)) logInfo(std::string(e.is_directory()?"[dir] ":"     ")+e.path().filename().string()); } catch(...){ logError("Folder not found: "+p.string()); }
+        }
+        else if (c=="list" && args.size()>=2 && args[1]=="objects") { for(size_t i=0;i<objects.size();i++) logInfo("["+std::to_string(i)+"] "+objects[i].name); }
+        else if (c=="list" && args.size()>=2 && args[1]=="lights") { for(size_t i=0;i<lights.size();i++) logInfo("["+std::to_string(i)+"] "+lights[i].name); }
+        else if (c=="select" && args.size()>=2) {
+            bool f=false;
+            for(int i=0;i<(int)objects.size();i++) if(objects[i].name==args[1]){sel=i;selType=SelectionType::Object;f=true;logInfo("Selected: "+objects[i].name);break;}
+            if(!f) logWarn("Object not found: "+args[1]);
+        }
+        else if (c=="create" && args.size()>=2) {
+            std::string t=args[1];
+            const char* tn[]={"cube","sphere","cylinder","pyramid","capsule","plane","model","empty"};
+            bool done=false;
+            for(int ti=0;ti<8;ti++){ if(t==tn[ti]){ addObject(objects,(PrimitiveType)ti,sel,selType); done=true; break; } }
+            if(!done) logInfo("Unknown type: "+t);
+        }
+        else if (c=="move" && args.size()>=5) {
+            bool f=false;
+            for(auto& o : objects){ if(o.name==args[1]){ o.pos=glm::vec3(std::stof(args[2]),std::stof(args[3]),std::stof(args[4])); logInfo("Moved: "+o.name); f=true; break; } }
+            if(!f) logInfo("Not found: "+args[1]);
+        }
+        else if (c=="move" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
+            objects[sel].pos={std::stof(args[1]),std::stof(args[2]),std::stof(args[3])};
+            logInfo("Moved: "+objects[sel].name);
+        }
+        else if (c=="scale" && args.size()>=5) {
+            bool f=false;
+            for(auto& o : objects){ if(o.name==args[1]){ o.scale=glm::vec3(std::stof(args[2]),std::stof(args[3]),std::stof(args[4])); logInfo("Scaled: "+o.name); f=true; break; } }
+            if(!f) logInfo("Not found: "+args[1]);
+        }
+        else if (c=="scale" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
+            objects[sel].scale=glm::vec3(std::stof(args[1]),std::stof(args[2]),std::stof(args[3]));
+            logInfo("Scaled: "+objects[sel].name);
+        }
+        else if (c=="rename" && args.size()>=3 && selType==SelectionType::Object && sel>=0) {
+            std::string oldName = objects[sel].name;
+            objects[sel].name = args[1];
+            logInfo("Renamed: "+oldName+" -> "+args[1]);
+        }
+        else if (c=="color" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
+            objects[sel].color={std::stof(args[1]),std::stof(args[2]),std::stof(args[3])};
+            logInfo("Color changed: "+objects[sel].name);
+        }
+        else if (c=="delete" && args.size()>=2) {
+            bool done=false;
+            for (int i=0;i<(int)objects.size() && !done;i++) if (objects[i].name==args[1]) { logInfo("Deleted: "+objects[i].name); if(sel==i){sel=-1;selType=SelectionType::None;} objects.erase(objects.begin()+i); done=true; selUI=-1; selSprite2D=-1; }
+            for (int i=0;i<(int)lights.size() && !done;i++) if (lights[i].name==args[1]) { logInfo("Deleted: "+lights[i].name); if(selLight==i)selLight=-1; lights.erase(lights.begin()+i); done=true; }
+            for (int i=0;i<(int)sceneCameras.size() && !done;i++) if (sceneCameras[i].name==args[1]) { logInfo("Deleted: "+sceneCameras[i].name); if(selCamera==i)selCamera=-1; sceneCameras.erase(sceneCameras.begin()+i); done=true; }
+            if(!done) logInfo("Not found: "+args[1]);
+        }
+        else if (c=="spawn" && args.size()>=2) {
+            PrimitiveType pt=PrimitiveType::Cube;
+            if(args[1]=="sphere")pt=PrimitiveType::Sphere;
+            else if(args[1]=="plane")pt=PrimitiveType::Plane;
+            else if(args[1]=="cylinder")pt=PrimitiveType::Cylinder;
+            else if(args[1]=="capsule")pt=PrimitiveType::Capsule;
+            else if(args[1]=="pyramid")pt=PrimitiveType::Pyramid;
+            SceneObject o; o.name=args.size()>=3?args[2]:(args[1]+"_"+std::to_string(objects.size()+1));
+            o.type=pt; o.pos={0,0.5f,0}; o.color={0.8f,0.6f,0.3f};
+            o.ecsID=scene.CreateEntity(o.name);
+            scene.GetTransform(o.ecsID).Position=o.pos;
+            scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
+            objects.push_back(o); sel=(int)objects.size()-1; selType=SelectionType::Object;
+            logInfo("Spawned: "+o.name);
+        }
+        else if (c=="volume" && args.size()>=2) { VE::AudioEngine::Get().SetMasterVolume(std::stof(args[1])); logInfo("Volume: "+args[1]); }
+        else if (c=="play" && args.size()>=2) { VE::AudioEngine::Get().PlaySound(args[1]); logInfo("Playing: "+args[1]); }
+        else if (c=="time" && args.size()>=2) { g_TimeOfDay=std::stof(args[1]); logInfo("Time of day: "+args[1]); }
+        else if (c=="sun" && args.size()>=2) { g_SunIntensity=std::stof(args[1]); logInfo("Sun intensity: "+args[1]); }
+        else if (c=="ambient" && args.size()>=2) { g_AmbientStrength=std::stof(args[1]); logInfo("Ambient: "+args[1]); }
+        else if (c=="scene" && args.size()>=2 && args[1]=="save") {
+            if(currentScenePath.empty()) currentScenePath=projectRoot+"\\Assets\\Scenes\\scene.vescene";
+            SaveScene(currentScenePath,objects,lights,sceneCameras);
+            logInfo("Scene saved: "+currentScenePath);
+        }
+        else if (c=="scene" && args.size()>=3 && args[1]=="load") { VE::SceneManager::Get().RequestLoad(args[2]); logInfo("Loading scene: "+args[2]); }
+        else if (c=="scene" && args.size()>=2 && args[1]=="reload") { VE::SceneManager::Get().RequestReload(); logInfo("Reloading scene..."); }
+        else if (c=="scene" && args.size()>=2 && args[1]=="current") { logInfo("Current: "+VE::SceneManager::Get().GetCurrent()); }
+        else logWarn("Unknown command: "+c+" (type 'help')");
+    }
+    ImGui::EndTabItem();
+}
+ if (ImGui::BeginTabItem("  Project")) {
         if (!g_DroppedFiles.empty()) {
             for (auto& srcPath : g_DroppedFiles) {
                 try {
@@ -3396,8 +3254,10 @@ if (ImGui::BeginTabBar("##btabs")) {
         }
 
         float totalH = ImGui::GetContentRegionAvail().y;
+        static bool s_wantCreateScript=false;
+        static bool s_wantProjCtx=false;
 
-        // ── LEFT: folder tree ──
+        // в”Ђв”Ђ LEFT: folder tree в”Ђв”Ђ
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f,0.086f,0.098f,1.f));
         ImGui::BeginChild("##ptree", ImVec2(180, totalH), false);
         ImGui::Spacing();
@@ -3441,7 +3301,7 @@ if (ImGui::BeginTabBar("##btabs")) {
         ImGui::PopStyleColor();
         ImGui::SameLine(0, 0);
 
-        // ── RIGHT: file grid ──
+        // в”Ђв”Ђ RIGHT: file grid в”Ђв”Ђ
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.086f,0.094f,0.106f,1.f));
         ImGui::BeginChild("##pfiles", ImVec2(-1, totalH), false);
 
@@ -3461,7 +3321,7 @@ if (ImGui::BeginTabBar("##btabs")) {
         }
         ImGui::SameLine();
         static char s_ProjectSearch[128] = {};
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f,0.09f,0.13f,1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f,0.11f,0.12f,1.f));
         ImGui::SetNextItemWidth(180);
         ImGui::InputTextWithHint("##psearch", "\xf0\x9f\x94\x8d  Search...", s_ProjectSearch, sizeof(s_ProjectSearch));
         ImGui::PopStyleColor();
@@ -3595,7 +3455,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                         dl->AddEllipse(ImVec2(cx,cy), ImVec2(S*.32f, S*.16f), IM_COL32(60,140,240,120), 0.f, 32, 1.f);
                     }
                     else if (iconType == IconType::Prefab) {
-                        // Тил-звезда (как значок префаба в Unity) — сразу отличается от обычной модели
+                        // РёР»-Р·РІРµР·РґР° (РєР°Рє Р·РЅР°С‡РѕРє РїСЂРµС„Р°Р±Р° РІ Unity) вЂ” СЃСЂР°Р·Сѓ РѕС‚Р»РёС‡Р°РµС‚СЃСЏ РѕС‚ РѕР±С‹С‡РЅРѕР№ РјРѕРґРµР»Рё
                         float R = S*.30f;
                         ImVec2 star[10];
                         for (int i=0;i<10;i++) {
@@ -3655,13 +3515,14 @@ if (ImGui::BeginTabBar("##btabs")) {
 
                     // Invisible button over the icon
                     ImGui::InvisibleButton(("##icon"+name).c_str(), ImVec2(ICON_SIZE, ICON_SIZE));
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) { assetSelected = e.path().string(); s_wantProjCtx=true; }
                     if (ImGui::IsItemClicked()) {
                         assetSelected = e.path().string();
                         if (isDir) assetCurrentPath = e.path().string();
-                        else if (ext==".mat") selType = SelectionType::None; // показать материал в Inspector
+                        else if (ext==".mat") selType = SelectionType::None; // РїРѕРєР°Р·Р°С‚СЊ РјР°С‚РµСЂРёР°Р» РІ Inspector
                     }
 
-                    // ── Drag source: материалы можно перетащить на объект ──
+                    // в”Ђв”Ђ Drag source: РјР°С‚РµСЂРёР°Р»С‹ РјРѕР¶РЅРѕ РїРµСЂРµС‚Р°С‰РёС‚СЊ РЅР° РѕР±СЉРµРєС‚ в”Ђв”Ђ
                     if (ext==".mat") {
                         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                             std::string dragPath = e.path().string();
@@ -3671,7 +3532,51 @@ if (ImGui::BeginTabBar("##btabs")) {
                         }
                     }
 
-                    // ── Drag source: Lua-скрипты можно перетащить на объект (как в Unity) ──
+                if (ext==".png"||ext==".jpg"||ext==".jpeg"||ext==".bmp"||ext==".tga"||ext==".gif") {
+                    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                        std::string dragPath = e.path().string();
+                        ImGui::SetDragDropPayload("TEXTURE_PATH", dragPath.c_str(), dragPath.size()+1, ImGuiCond_Once);
+                        ImGui::TextColored(ImVec4(0.6f,0.8f,1.f,1.f), "Texture: %s", name.c_str());
+                        ImGui::EndDragDropSource();
+                    }
+                }
+                if (ext==".png"||ext==".jpg"||
+                    ext==".jpeg"||ext==".bmp"||
+                    ext==".tga"||ext==".gif") {
+                    if (ImGui::BeginDragDropSource(
+                        ImGuiDragDropFlags_SourceAllowNullID)) {
+                        std::string dragPath =
+                            e.path().string();
+                        ImGui::SetDragDropPayload(
+                            "TEXTURE_PATH",
+                            dragPath.c_str(),
+                            dragPath.size()+1,
+                            ImGuiCond_Once);
+                        ImGui::TextColored(
+                            ImVec4(0.6f,0.8f,1.f,1.f),
+                            "Texture: %s", name.c_str());
+                        ImGui::EndDragDropSource();
+                    }
+                }
+                if (ext==".png"||ext==".jpg"||
+                    ext==".jpeg"||ext==".bmp"||
+                    ext==".tga"||ext==".gif") {
+                    if (ImGui::BeginDragDropSource(
+                        ImGuiDragDropFlags_SourceAllowNullID)) {
+                        std::string dragPath =
+                            e.path().string();
+                        ImGui::SetDragDropPayload(
+                            "TEXTURE_PATH",
+                            dragPath.c_str(),
+                            dragPath.size()+1,
+                            ImGuiCond_Once);
+                        ImGui::TextColored(
+                            ImVec4(0.6f,0.8f,1.f,1.f),
+                            "Texture: %s", name.c_str());
+                        ImGui::EndDragDropSource();
+                    }
+                }
+                    // в”Ђв”Ђ Drag source: Lua-СЃРєСЂРёРїС‚С‹ РјРѕР¶РЅРѕ РїРµСЂРµС‚Р°С‰РёС‚СЊ РЅР° РѕР±СЉРµРєС‚ (РєР°Рє РІ Unity) в”Ђв”Ђ
                     if (ext==".lua") {
                         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                             std::string dragPath = e.path().string();
@@ -3684,7 +3589,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !isDir) {
                         if (ext==".lua") openInVSCode(e.path().string());
                         else if (ext==".mat") {
-                            // Применить материал к выбранному объекту (быстрый способ без drag&drop)
+                            // РџСЂРёРјРµРЅРёС‚СЊ РјР°С‚РµСЂРёР°Р» Рє РІС‹Р±СЂР°РЅРЅРѕРјСѓ РѕР±СЉРµРєС‚Сѓ (Р±С‹СЃС‚СЂС‹Р№ СЃРїРѕСЃРѕР± Р±РµР· drag&drop)
                             if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
                                 Material loaded = LoadMaterial(e.path().string());
                                 auto& tobj = objects[sel];
@@ -3705,7 +3610,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                                     auto& tobj = objects[sel];
                                     if (tobj.materials.empty()) { Material m; m.name="Default"; m.color=tobj.color; tobj.materials.push_back(m); tobj.activeMaterial=0; }
                                     auto& tmat = tobj.materials[tobj.activeMaterial];
-                                    int target = (g_MatPickTarget!=0) ? g_MatPickTarget : 1; // без явного выбора — по умолчанию база
+                                    int target = (g_MatPickTarget!=0) ? g_MatPickTarget : 1; // Р±РµР· СЏРІРЅРѕРіРѕ РІС‹Р±РѕСЂР° вЂ” РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ Р±Р°Р·Р°
                                     if (target==2) {
                                         tmat.layer2TexturePath = e.path().string(); tmat.layer2TextureID = tid;
                                         logInfo("Layer 2 -> "+tobj.name+" ["+tmat.name+"]");
@@ -3717,9 +3622,9 @@ if (ImGui::BeginTabBar("##btabs")) {
                                         if (tobj.activeMaterial==0) { tobj.texturePath=tmat.texturePath; tobj.textureID=tid; }
                                         logInfo("Texture -> "+tobj.name+" ["+tmat.name+"]");
                                     }
-                                    g_MatPickTarget = 0; // режим выбора сбрасывается сразу после назначения
+                                    g_MatPickTarget = 0; // СЂРµР¶РёРј РІС‹Р±РѕСЂР° СЃР±СЂР°СЃС‹РІР°РµС‚СЃСЏ СЃСЂР°Р·Сѓ РїРѕСЃР»Рµ РЅР°Р·РЅР°С‡РµРЅРёСЏ
                                 }
-                            } else logInfo("Select object first");
+                        } else if (selUI>=0 && selUI<(int)uiElements.size()) { GLuint tid=VE::LoadTextureRaw(e.path().string()); if(tid){ uiElements[selUI].tex=tid; uiElements[selUI].texPath=e.path().string(); logInfo("Texture -> "+uiElements[selUI].name); } } else logInfo("Select object or UI first");
                         } else if (ext==".obj"||ext==".fbx"||ext==".gltf"||ext==".glb") {
                             SceneObject o; o.name=e.path().stem().string(); o.type=PrimitiveType::Model3D;
                             o.modelPath=e.path().string(); o.model=std::make_shared<VE::Model>(); o.model->Load(o.modelPath);
@@ -3782,15 +3687,11 @@ if (ImGui::BeginTabBar("##btabs")) {
         }
 
         // Right-click context menu
-        if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsAnyItemHovered())
-            ImGui::OpenPopup("##projctx");
+        if ((ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsAnyItemHovered()) || s_wantProjCtx) { ImGui::OpenPopup("##projctx"); s_wantProjCtx=false; }
         if (ImGui::BeginPopup("##projctx")) {
             ImGui::TextColored(ImVec4(0.45f,0.45f,0.50f,1.f), "  Create"); ImGui::Separator();
             if (ImGui::MenuItem("  Lua Script")) {
-                static int snum = 1;
-                std::string sp = assetCurrentPath + "\\NewScript_" + std::to_string(snum++) + ".lua";
-                std::ofstream f(sp); f << "-- New Script\nfunction onStart()\nend\nfunction onUpdate(dt)\nend\n"; f.close();
-                logInfo("Created: " + fs::path(sp).filename().string()); openInVSCode(sp);
+                s_wantCreateScript = true;
             }
             if (ImGui::MenuItem("  Material")) {
                 static int mnum = 1;
@@ -3833,6 +3734,28 @@ if (ImGui::BeginTabBar("##btabs")) {
 
         // Rename file popup
         static char s_RenameBuffer[256] = {};
+        // ── Create Script popup (как в Unity: спросить имя) ──
+        if (s_wantCreateScript) { ImGui::OpenPopup("##create_script"); s_wantCreateScript=false; }
+        if (ImGui::BeginPopupModal("##create_script", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            static char scriptNameBuf[128] = "NewScript";
+            ImGui::Text("Script name:");
+            ImGui::SetNextItemWidth(250);
+            bool enter = ImGui::InputText("##script_name", scriptNameBuf, sizeof(scriptNameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::Spacing();
+            if (enter || ImGui::Button("Create", ImVec2(120,0))) {
+                if (scriptNameBuf[0]) {
+                    std::string name = scriptNameBuf;
+                    if (name.find(".lua")==std::string::npos) name += ".lua";
+                    std::string sp = assetCurrentPath + "\\" + name;
+                    std::ofstream f(sp); f << "-- " << name << "\nfunction onStart()\nend\nfunction onUpdate(dt)\nend\n"; f.close();
+                    logInfo("Created: "+name);
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
         if (ImGui::BeginPopupModal("##rename_file", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("New name:");
             ImGui::SetNextItemWidth(300);
@@ -3843,6 +3766,9 @@ if (ImGui::BeginTabBar("##btabs")) {
                     try {
                         fs::path oldP(assetSelected);
                         fs::path newP = oldP.parent_path() / s_RenameBuffer;
+                    if (oldP.extension()==".lua" && newP.extension()!=".lua") {
+                        newP.replace_extension(".lua");
+                    }
                         fs::rename(oldP, newP);
                         logInfo("Renamed to: "+std::string(s_RenameBuffer));
                         assetSelected = newP.string();
@@ -3860,7 +3786,7 @@ if (ImGui::BeginTabBar("##btabs")) {
         ImGui::EndTabItem();
     }
 
-        // ── Animation ──
+        // в”Ђв”Ђ Animation в”Ђв”Ђ
     if (ImGui::BeginTabItem("  Animation")) {
         ImGui::Spacing();
         if (selType != SelectionType::Object || sel < 0 || sel >= (int)objects.size()) {
@@ -3870,7 +3796,7 @@ if (ImGui::BeginTabBar("##btabs")) {
             ImGui::TextColored(ImVec4(0.85f,0.85f,0.90f,1.f), "  Animating: %s", aobj.name.c_str());
             ImGui::Spacing();
 
-            // ── Выбор клипа ──
+            // в”Ђв”Ђ Р’С‹Р±РѕСЂ РєР»РёРїР° в”Ђв”Ђ
             const char* curClipName = (aobj.customClipIndex>=0 && aobj.customClipIndex<(int)aobj.customClips.size())
                 ? aobj.customClips[aobj.customClipIndex].name.c_str() : "None";
             ImGui::SetNextItemWidth(180);
@@ -3913,7 +3839,7 @@ if (ImGui::BeginTabBar("##btabs")) {
 
                 float dur = clip.keys.empty() ? 1.f : std::max(1.f, clip.keys.back().time);
 
-                // ── Визуальный таймлайн (как в Blender/Blockbench) ──
+                // в”Ђв”Ђ Р’РёР·СѓР°Р»СЊРЅС‹Р№ С‚Р°Р№РјР»Р°Р№РЅ (РєР°Рє РІ Blender/Blockbench) в”Ђв”Ђ
                 ImGui::Spacing();
                 {
                     float timelineWidth  = ImGui::GetContentRegionAvail().x - 16.f;
@@ -3925,14 +3851,14 @@ if (ImGui::BeginTabBar("##btabs")) {
 
                     dl->AddRectFilled(p0, p1, IM_COL32(18,18,24,255), 4.f);
 
-                    // Сетка по секундам + подписи
+                    // РµС‚РєР° РїРѕ СЃРµРєСѓРЅРґР°Рј + РїРѕРґРїРёСЃРё
                     for (int s=0; s<=(int)ceilf(dur); s++) {
                         float x = p0.x + s*pxPerSec;
                         dl->AddLine(ImVec2(x,p0.y), ImVec2(x,p1.y), IM_COL32(48,48,56,255));
                         dl->AddText(ImVec2(x+3,p0.y+2), IM_COL32(140,140,150,255), (std::to_string(s)+"s").c_str());
                     }
 
-                    // Ромбики — по одному на ключевой кадр
+                    // Р РѕРјР±РёРєРё вЂ” РїРѕ РѕРґРЅРѕРјСѓ РЅР° РєР»СЋС‡РµРІРѕР№ РєР°РґСЂ
                     float trackY = p0.y + timelineHeight*0.68f;
                     for (auto& k : clip.keys) {
                         float x = p0.x + k.time*pxPerSec;
@@ -3942,32 +3868,32 @@ if (ImGui::BeginTabBar("##btabs")) {
                         dl->AddQuad(ImVec2(x,trackY-6), ImVec2(x+6,trackY), ImVec2(x,trackY+6), ImVec2(x-6,trackY), IM_COL32(10,10,12,255),1.5f);
                     }
 
-                    // Плейхед (текущее время)
+                    // РџР»РµР№С…РµРґ (С‚РµРєСѓС‰РµРµ РІСЂРµРјСЏ)
                     float phX = p0.x + glm::clamp(aobj.customAnimTime,0.f,dur)*pxPerSec;
                     dl->AddLine(ImVec2(phX,p0.y), ImVec2(phX,p1.y), IM_COL32(255,90,90,255), 2.f);
                     dl->AddTriangleFilled(ImVec2(phX-5,p0.y), ImVec2(phX+5,p0.y), ImVec2(phX,p0.y+8), IM_COL32(255,90,90,255));
 
                     ImGui::InvisibleButton("##timeline", ImVec2(timelineWidth, timelineHeight));
-                    // Клик/протаскивание по полосе — скраб времени (как таскать плейхед в Blender)
+                    // РљР»РёРє/РїСЂРѕС‚Р°СЃРєРёРІР°РЅРёРµ РїРѕ РїРѕР»РѕСЃРµ вЂ” СЃРєСЂР°Р± РІСЂРµРјРµРЅРё (РєР°Рє С‚Р°СЃРєР°С‚СЊ РїР»РµР№С…РµРґ РІ Blender)
                     if (ImGui::IsItemActive()) {
                         float mx = ImGui::GetIO().MousePos.x;
                         float t = (mx - p0.x) / pxPerSec;
                         aobj.customAnimTime = glm::clamp(t, 0.f, dur);
                         aobj.customAnimPlaying = false;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click or drag to scrub time — diamonds are keyframes");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click or drag to scrub time вЂ” diamonds are keyframes");
                 }
                 ImGui::Spacing();
                 ImGui::Text("Time: %.2f s", aobj.customAnimTime);
                 if (!aobj.customAnimPlaying && !clip.keys.empty())
-                    SampleObjectClip(clip, aobj.customAnimTime, aobj.pos, aobj.rot, aobj.scale); // превью позы при скрабе
+                    SampleObjectClip(clip, aobj.customAnimTime, aobj.pos, aobj.rot, aobj.scale); // РїСЂРµРІСЊСЋ РїРѕР·С‹ РїСЂРё СЃРєСЂР°Р±Рµ
 
                 ImGui::Spacing();
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f,0.10f,0.22f,1.f));
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f,0.15f,0.18f,1.f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, COL_ACCENT);
                 if (ImGui::Button("  + Add Keyframe at current time (captures current Transform)  ")) {
                     ObjectKeyframe k; k.time=aobj.customAnimTime; k.pos=aobj.pos; k.rot=aobj.rot; k.scale=aobj.scale;
-                    // если кадр в это же время уже есть — заменяем, иначе добавляем и сортируем
+                    // РµСЃР»Рё РєР°РґСЂ РІ СЌС‚Рѕ Р¶Рµ РІСЂРµРјСЏ СѓР¶Рµ РµСЃС‚СЊ вЂ” Р·Р°РјРµРЅСЏРµРј, РёРЅР°С‡Рµ РґРѕР±Р°РІР»СЏРµРј Рё СЃРѕСЂС‚РёСЂСѓРµРј
                     bool replaced=false;
                     for (auto& ek : clip.keys) if (fabsf(ek.time-k.time)<0.001f) { ek=k; replaced=true; break; }
                     if (!replaced) {
@@ -4018,9 +3944,9 @@ ImGui::PopStyleColor();
 
 } // end if (!g_PlayerMode)
 else {
-    // ═══════════════════════════════════════════════════════
-    //   PLAYER MODE — полноэкранный вид игры, без редактора
-    // ═══════════════════════════════════════════════════════
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    //   PLAYER MODE вЂ” РїРѕР»РЅРѕСЌРєСЂР°РЅРЅС‹Р№ РІРёРґ РёРіСЂС‹, Р±РµР· СЂРµРґР°РєС‚РѕСЂР°
+    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
     g_VpSize = io.DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0,0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
@@ -4034,7 +3960,7 @@ else {
     float u2g=g_VpSize.x>0.f?g_VpSize.x/3840.f:1.f;
     float v1g=g_VpSize.y>0.f?g_VpSize.y/2160.f:1.f;
     ImGui::Image((ImTextureID)(intptr_t)gameTex, g_VpSize, ImVec2(0,v1g), ImVec2(u2g,0));
-    // ── Player mode: курсор захватывается сразу (нет UI, некуда кликать) ──
+    // в”Ђв”Ђ Player mode: РєСѓСЂСЃРѕСЂ Р·Р°С…РІР°С‚С‹РІР°РµС‚СЃСЏ СЃСЂР°Р·Сѓ (РЅРµС‚ UI, РЅРµРєСѓРґР° РєР»РёРєР°С‚СЊ) в”Ђв”Ђ
     if (!g_MouseCaptured) {
         g_MouseCaptured = true;
         glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -4055,25 +3981,29 @@ else {
 
 ImGui::Render();
 ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-g_RawMouseDX=0; g_RawMouseDY=0; // сброс дельты ПЕРЕД poll — свежие данные переживут до следующего кадра
+g_RawMouseDX=0; g_RawMouseDY=0; // СЃР±СЂРѕСЃ РґРµР»СЊС‚С‹ РџР•Р Р•Р” poll вЂ” СЃРІРµР¶РёРµ РґР°РЅРЅС‹Рµ РїРµСЂРµР¶РёРІСѓС‚ РґРѕ СЃР»РµРґСѓСЋС‰РµРіРѕ РєР°РґСЂР°
 window->OnUpdate();
-
-    } // end while
-
-    g_Prefs.Save();
-
-    ImGui_ImplOpenGL3_Shutdown();ImGui_ImplGlfw_Shutdown();ImGui::DestroyContext();
-    VE::AudioEngine::Get().Shutdown();
-    shader.Delete();outlineShader.Delete();gridShader.Delete();gizmoShader.Delete();skyboxShader.Delete();
-    glDeleteFramebuffers(1,&sceneFBO);glDeleteFramebuffers(1,&gameFBO);
-    glDeleteFramebuffers(1,&sceneMSFBO);glDeleteFramebuffers(1,&gameMSFBO);
-    glDeleteFramebuffers(1,&sceneHDRFBO);glDeleteFramebuffers(1,&gameHDRFBO);
-    glDeleteTextures(1,&sceneHDRTex);glDeleteTextures(1,&gameHDRTex);
-    glDeleteFramebuffers(1,&brightFBO);glDeleteTextures(1,&brightTex);
-    glDeleteFramebuffers(2,pingpongFBO);glDeleteTextures(2,pingpongTex);
-    glDeleteVertexArrays(1,&quadVAO);glDeleteBuffers(1,&quadVBO);
-    bloomBrightShader.Delete();bloomBlurShader.Delete();bloomCompositeShader.Delete();
-    glDeleteRenderbuffers(1,&sceneMSColorRBO);glDeleteRenderbuffers(1,&sceneMSDepthRBO);
-    glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO);
-    delete window;return 0;
 }
+} // end while
+
+g_Prefs.Save();
+ImGui_ImplOpenGL3_Shutdown();ImGui_ImplGlfw_Shutdown();ImGui::DestroyContext();
+VE::AudioEngine::Get().Shutdown();
+shader.Delete();outlineShader.Delete();gridShader.Delete();gizmoShader.Delete();skyboxShader.Delete();
+glDeleteFramebuffers(1,&sceneFBO);glDeleteFramebuffers(1,&gameFBO);
+glDeleteFramebuffers(1,&sceneMSFBO);glDeleteFramebuffers(1,&gameMSFBO);
+glDeleteFramebuffers(1,&sceneHDRFBO);glDeleteFramebuffers(1,&gameHDRFBO);
+glDeleteTextures(1,&sceneHDRTex);glDeleteTextures(1,&gameHDRTex);
+glDeleteFramebuffers(1,&brightFBO);glDeleteTextures(1,&brightTex);
+glDeleteFramebuffers(2,pingpongFBO);glDeleteTextures(2,pingpongTex);
+glDeleteVertexArrays(1,&quadVAO);glDeleteBuffers(1,&quadVBO);
+bloomBrightShader.Delete();bloomBlurShader.Delete();bloomCompositeShader.Delete();
+glDeleteRenderbuffers(1,&sceneMSColorRBO);glDeleteRenderbuffers(1,&sceneMSDepthRBO);
+glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO);
+delete window;
+return 0;
+}
+
+
+
+

@@ -1,0 +1,10 @@
+function onStart()
+    UI.setVisible("Screamer", false)
+    UI.onClicked("ScreamerBtn", function()
+        UI.setVisible("Screamer", true)
+        Audio.play("Assets/Audio/scream-freddy.mp3")
+    end)
+    UI.onClicked("Screamer", function()
+        UI.setVisible("Screamer", false)
+    end)
+end

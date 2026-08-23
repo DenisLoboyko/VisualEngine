@@ -1,8 +1,13 @@
-#pragma once
+﻿#pragma once
 #include "EditorGlobals.h"
 #include "Core/DebugDraw.h"
 #include "Core/ParticleSystem.h"
-// ── Отрисовка сцены, гизмо, VAO примитивов (вынесено из main.cpp) ──
+#include "ShadowMap.h"
+extern VE::ShadowMap* g_ShadowMap;
+extern VE::Shader* g_DepthShader;
+extern VE::Shader* g_DepthSkinnedShader;
+extern glm::mat4 g_ShadowLightSpace;
+// в”Ђв”Ђ РћС‚СЂРёСЃРѕРІРєР° СЃС†РµРЅС‹, РіРёР·РјРѕ, VAO РїСЂРёРјРёС‚РёРІРѕРІ (РІС‹РЅРµСЃРµРЅРѕ РёР· main.cpp) в”Ђв”Ђ
 
 unsigned int setupCubeVAO(){
     float v[]={
@@ -41,7 +46,7 @@ void drawMesh(const SceneObject& obj,unsigned int cubeVAO,VE::Mesh& sph,VE::Mesh
         case PrimitiveType::Capsule:  glBindVertexArray(cap.VAO);glDrawElements(GL_TRIANGLES,cap.indexCount,GL_UNSIGNED_INT,0);break;
         case PrimitiveType::Plane:    glBindVertexArray(pln.VAO);glDrawElements(GL_TRIANGLES,pln.indexCount,GL_UNSIGNED_INT,0);break;
         case PrimitiveType::Model3D:  if(obj.model&&obj.model->loaded)obj.model->Draw();break;
-        case PrimitiveType::Empty:    break; // невидим в игре — только Transform + скрипты, как пустой GameObject в Unity
+        case PrimitiveType::Empty:    break; // РЅРµРІРёРґРёРј РІ РёРіСЂРµ вЂ” С‚РѕР»СЊРєРѕ Transform + СЃРєСЂРёРїС‚С‹, РєР°Рє РїСѓСЃС‚РѕР№ GameObject РІ Unity
     }
 }
 void openInVSCode(const std::string& path){
@@ -54,7 +59,7 @@ void addObject(std::vector<SceneObject>& objects,PrimitiveType type,int& sel,Sel
     const char* n[]={"Cube","Sphere","Cylinder","Pyramid","Capsule","Plane","Model","Empty"};
     SceneObject o;
     o.name=std::string(n[(int)type])+"_"+std::to_string(objects.size()+1);
-    o.pos=glm::vec3(0,0.5f,0);o.type=type;o.color=glm::vec3(0.4f,0.6f,0.9f);
+    o.pos=glm::vec3(0,0.5f,0);o.type=type;o.color=glm::vec3(0.8f,0.8f,0.82f);
     o.ecsID=scene.CreateEntity(o.name);
     scene.GetTransform(o.ecsID).Position=o.pos;
     scene.GetTransform(o.ecsID).Scale=o.scale;
@@ -79,8 +84,64 @@ void drawRing(unsigned int sid,glm::vec3 center,int axis,float gs,glm::vec4 col,
     glLineWidth(2.5f);glDrawArrays(GL_LINE_STRIP,0,SEG+1);
     glDeleteVertexArrays(1,&rVAO);glDeleteBuffers(1,&rVBO);
 }
-// Рисует значок камеры или света как billboard, повёрнутый к камере.
-// Вместо плоского цветного квадрата — узнаваемая иконка на тёмной круглой подложке.
+// Р РёСЃСѓРµС‚ Р·РЅР°С‡РѕРє РєР°РјРµСЂС‹ РёР»Рё СЃРІРµС‚Р° РєР°Рє billboard, РїРѕРІС‘СЂРЅСѓС‚С‹Р№ Рє РєР°РјРµСЂРµ.
+// Р’РјРµСЃС‚Рѕ РїР»РѕСЃРєРѕРіРѕ С†РІРµС‚РЅРѕРіРѕ РєРІР°РґСЂР°С‚Р° вЂ” СѓР·РЅР°РІР°РµРјР°СЏ РёРєРѕРЅРєР° РЅР° С‚С‘РјРЅРѕР№ РєСЂСѓРіР»РѕР№ РїРѕРґР»РѕР¶РєРµ.
+void drawSelectionBox(unsigned int sid, const glm::mat4& m, const glm::mat4& vp, glm::vec4 col, const glm::vec3& he=glm::vec3(0.5f)){
+    glUseProgram(sid);
+    glm::vec3 c[8];
+    for(int i=0;i<8;i++){
+        glm::vec3 l((i&1)?he.x:-he.x, (i&2)?he.y:-he.y, (i&4)?he.z:-he.z);
+        c[i] = glm::vec3(m * glm::vec4(l,1.0));
+    }
+    int e[24] = {0,1, 2,3, 4,5, 6,7,  0,2, 1,3, 4,6, 5,7,  0,4, 1,5, 2,6, 3,7};
+    std::vector<float> v;
+    for(int i=0;i<24;i++){ v.push_back(c[e[i]].x); v.push_back(c[e[i]].y); v.push_back(c[e[i]].z); }
+    unsigned int vao,vbo; glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo);
+    glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER, v.size()*sizeof(float), v.data(), GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0); glEnableVertexAttribArray(0);
+    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
+    glUniform4f(glGetUniformLocation(sid,"color"),col.r,col.g,col.b,col.a);
+    glLineWidth(1.5f);
+    glDrawArrays(GL_LINES,0,24);
+    glDeleteVertexArrays(1,&vao); glDeleteBuffers(1,&vbo);
+}
+void drawCameraFrustum(GLuint sid, const glm::vec3& pos, const glm::vec3& rot, float fov, bool isSel, const glm::mat4& vp) {
+    float yaw = glm::radians(rot.y);
+    float pitch = glm::radians(rot.x);
+    glm::vec3 forward(cosf(pitch)*sinf(yaw), sinf(pitch), cosf(pitch)*cosf(yaw));
+    forward = glm::normalize(forward);
+    glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0,1,0)));
+    glm::vec3 up = glm::cross(right, forward);
+    float dist = 2.0f;
+    float halfW = tanf(glm::radians(fov*0.5f))*dist;
+    float halfH = halfW*0.5625f;
+    glm::vec3 center = pos + forward*dist;
+    glm::vec3 c0=center+right*halfW+up*halfH, c1=center-right*halfW+up*halfH,
+              c2=center-right*halfW-up*halfH, c3=center+right*halfW-up*halfH;
+    glm::vec3 bx=right*0.18f, by=up*0.14f, bz=forward*0.18f;
+    glm::vec3 b[8]={ pos-bx-by-bz, pos+bx-by-bz, pos+bx+by-bz, pos-bx+by-bz,
+                     pos-bx-by+bz, pos+bx-by+bz, pos+bx+by+bz, pos-bx+by+bz };
+    int E[12][2]={{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
+    std::vector<float> f;
+    for (auto& e : E) f.insert(f.end(),{b[e[0]].x,b[e[0]].y,b[e[0]].z,b[e[1]].x,b[e[1]].y,b[e[1]].z});
+    f.insert(f.end(),{ pos.x,pos.y,pos.z,c0.x,c0.y,c0.z,  pos.x,pos.y,pos.z,c1.x,c1.y,c1.z,
+                       pos.x,pos.y,pos.z,c2.x,c2.y,c2.z,  pos.x,pos.y,pos.z,c3.x,c3.y,c3.z,
+                       c0.x,c0.y,c0.z,c1.x,c1.y,c1.z,  c1.x,c1.y,c1.z,c2.x,c2.y,c2.z,
+                       c2.x,c2.y,c2.z,c3.x,c3.y,c3.z,  c3.x,c3.y,c3.z,c0.x,c0.y,c0.z });
+    GLuint vao=0,vbo=0;
+    glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo);
+    glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER, f.size()*sizeof(float), f.data(), GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
+    glEnableVertexAttribArray(0);
+    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
+    glm::vec4 col = isSel ? glm::vec4(1.f,0.9f,0.3f,1.f) : glm::vec4(0.45f,0.75f,1.f,0.9f);
+    glUniform4f(glGetUniformLocation(sid,"color"),col.r,col.g,col.b,col.a);
+    glLineWidth(1.5f);
+    glDrawArrays(GL_LINES,0,(GLsizei)(f.size()/3));
+    glDeleteVertexArrays(1,&vao); glDeleteBuffers(1,&vbo);
+}
 void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const glm::mat4& view,const glm::mat4& proj,bool isLight){
     glm::vec3 right=glm::normalize(glm::vec3(view[0][0],view[1][0],view[2][0]));
     glm::vec3 up=glm::normalize(glm::vec3(view[0][1],view[1][1],view[2][1]));
@@ -105,7 +166,7 @@ void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_DEPTH_TEST);
 
-    // ── 1. Тёмная круглая подложка для контраста на любом фоне ──
+    // в”Ђв”Ђ 1. РўС‘РјРЅР°СЏ РєСЂСѓРіР»Р°СЏ РїРѕРґР»РѕР¶РєР° РґР»СЏ РєРѕРЅС‚СЂР°СЃС‚Р° РЅР° Р»СЋР±РѕРј С„РѕРЅРµ в”Ђв”Ђ
     {
         const int SEG=20;
         std::vector<float> f; f.reserve((SEG+2)*3);
@@ -120,7 +181,7 @@ void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const
     }
 
     if(isLight){
-        // ── 2a. Лампочка: кружок-«голова» + основание + лучи ──
+        // в”Ђв”Ђ 2a. Р›Р°РјРїРѕС‡РєР°: РєСЂСѓР¶РѕРє-В«РіРѕР»РѕРІР°В» + РѕСЃРЅРѕРІР°РЅРёРµ + Р»СѓС‡Рё в”Ђв”Ђ
         {
             const int SEG=14;
             std::vector<float> f; f.reserve((SEG+2)*3);
@@ -152,7 +213,7 @@ void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const
             glDrawArrays(GL_LINES,0,(GLsizei)(f.size()/3));
         }
     } else {
-        // ── 2b. Камера: корпус + объектив + видоискатель ──
+        // в”Ђв”Ђ 2b. РљР°РјРµСЂР°: РєРѕСЂРїСѓСЃ + РѕР±СЉРµРєС‚РёРІ + РІРёРґРѕРёСЃРєР°С‚РµР»СЊ в”Ђв”Ђ
         {
             glm::vec3 a=bp(-0.44f,-0.20f),b=bp(0.30f,-0.20f),c=bp(0.30f,0.20f),d=bp(-0.44f,0.20f);
             std::vector<float> f={a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z, c.x,c.y,c.z,d.x,d.y,d.z,a.x,a.y,a.z};
@@ -189,7 +250,7 @@ void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const
         }
     }
 
-    // ── 3. Тонкий контур подложки поверх всего — чтобы значок не сливался с фоном ──
+    // в”Ђв”Ђ 3. РўРѕРЅРєРёР№ РєРѕРЅС‚СѓСЂ РїРѕРґР»РѕР¶РєРё РїРѕРІРµСЂС… РІСЃРµРіРѕ вЂ” С‡С‚РѕР±С‹ Р·РЅР°С‡РѕРє РЅРµ СЃР»РёРІР°Р»СЃСЏ СЃ С„РѕРЅРѕРј в”Ђв”Ђ
     {
         const int SEG=20;
         std::vector<float> f; f.reserve((SEG+1)*3);
@@ -225,12 +286,56 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
     if(showSkybox) drawProceduralSky(skyboxShader.ID,view,proj,skybox.VAO,ComputeSunDir(g_TimeOfDay),(float)glfwGetTime());
     if(showGrid&&!isGameView) grid.Draw(gridShader.ID,view,proj);
 
-    // ── Направленный свет солнца: направление/цвет/яркость зависят от времени суток ──
+    // в”Ђв”Ђ РќР°РїСЂР°РІР»РµРЅРЅС‹Р№ СЃРІРµС‚ СЃРѕР»РЅС†Р°: РЅР°РїСЂР°РІР»РµРЅРёРµ/С†РІРµС‚/СЏСЂРєРѕСЃС‚СЊ Р·Р°РІРёСЃСЏС‚ РѕС‚ РІСЂРµРјРµРЅРё СЃСѓС‚РѕРє в”Ђв”Ђ
     glm::vec3 sunDir = ComputeSunDir(g_TimeOfDay);
     float sunH = sunDir.y;
     float sunDayF = glm::clamp((sunH+0.20f)/0.45f, 0.f, 1.f);
     glm::vec3 sunCol = glm::mix(glm::vec3(0.05f,0.06f,0.12f), glm::vec3(1.0f,0.95f,0.85f), sunDayF);
     float sunFinalIntensity = sunDayF * g_SunIntensity;
+    // Ночью солнце заменяет луна: холодный свет + свои тени
+    bool isNight = sunH < -0.05f;
+    glm::vec3 dirL = isNight ? -sunDir : sunDir;
+    glm::vec3 colL = isNight ? glm::vec3(0.40f,0.50f,0.85f) : sunCol;
+    float intL = isNight ? (0.25f * g_SunIntensity) : sunFinalIntensity;
+    // Ambient из неба — как Skybox-ambient в Unity / Background-ambient в Godot
+    glm::vec3 ambCol = glm::mix(glm::vec3(0.02f,0.03f,0.06f), glm::vec3(0.28f,0.38f,0.52f), sunDayF) * (g_AmbientStrength * 3.0f);
+
+    // ── SHADOW MAP DEPTH PASS ──
+    if (g_ShadowMap && g_DepthShader && intL > 0.001f) {
+        GLint prevFBO=0; int vp[4];
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        g_ShadowLightSpace = g_ShadowMap->GetLightSpaceMatrix(dirL);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_ShadowMap->FBO);
+        glViewport(0,0,g_ShadowMap->width,g_ShadowMap->height);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        for(int si=0;si<(int)objects.size();si++){
+            if(!objects[si].active) continue;
+            if(si==excludeIndex) continue;
+            auto& sobj=objects[si];
+            if(sobj.type==PrimitiveType::Empty) continue;
+            glm::mat4 sm=glm::mat4(1);
+            sm=glm::translate(sm,sobj.pos);
+            sm=glm::rotate(sm,glm::radians(sobj.rot.x),glm::vec3(1,0,0));
+            sm=glm::rotate(sm,glm::radians(sobj.rot.y),glm::vec3(0,1,0));
+            sm=glm::rotate(sm,glm::radians(sobj.rot.z),glm::vec3(0,0,1));
+            sm=glm::scale(sm,sobj.scale);
+            bool skin=(sobj.type==PrimitiveType::Model3D && sobj.model && sobj.model->hasSkeleton && sobj.animIndex>=0);
+            VE::Shader* ds=(skin&&g_DepthSkinnedShader)?g_DepthSkinnedShader:g_DepthShader;
+            ds->Use();
+            glUniformMatrix4fv(glGetUniformLocation(ds->ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
+            if(skin){
+                auto bm=sobj.model->GetBoneMatrices(sobj.animIndex,sobj.animTime,sobj.animLoop);
+                int n=std::min((int)bm.size(),VE::MAX_BONES);
+                for(int b=0;b<n;b++){std::string u="boneMatrices["+std::to_string(b)+"]";
+                    glUniformMatrix4fv(glGetUniformLocation(ds->ID,u.c_str()),1,GL_FALSE,glm::value_ptr(bm[b]));}
+            }
+            glUniformMatrix4fv(glGetUniformLocation(ds->ID,"model"),1,GL_FALSE,glm::value_ptr(sm));
+            drawMesh(sobj,cubeVAO,sph,cyl,pyr,cap,pln);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+        glViewport(vp[0],vp[1],vp[2],vp[3]);
+    }
 
     shader.Use();
     glUniformMatrix4fv(glGetUniformLocation(shader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
@@ -238,10 +343,12 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
     glUniform3f(glGetUniformLocation(shader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
     glUniform3f(glGetUniformLocation(shader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
     glUniform1f(glGetUniformLocation(shader.ID,"fogDensity"),g_FogDensity);
-    glUniform3f(glGetUniformLocation(shader.ID,"sunDir"),sunDir.x,sunDir.y,sunDir.z);
-    glUniform3f(glGetUniformLocation(shader.ID,"sunColor"),sunCol.x,sunCol.y,sunCol.z);
-    glUniform1f(glGetUniformLocation(shader.ID,"sunIntensity"),sunFinalIntensity);
-    glUniform1f(glGetUniformLocation(shader.ID,"ambientStrength"),g_AmbientStrength);
+    glUniform3f(glGetUniformLocation(shader.ID,"sunDir"),dirL.x,dirL.y,dirL.z);
+    glUniform3f(glGetUniformLocation(shader.ID,"sunColor"),colL.x,colL.y,colL.z);
+    glUniform1f(glGetUniformLocation(shader.ID,"sunIntensity"),intL);
+    glUniform3f(glGetUniformLocation(shader.ID,"ambientColor"),ambCol.r,ambCol.g,ambCol.b);
+    glUniformMatrix4fv(glGetUniformLocation(shader.ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
+    glActiveTexture(GL_TEXTURE7);glBindTexture(GL_TEXTURE_2D,g_ShadowMap?g_ShadowMap->depthMap:0);glUniform1i(glGetUniformLocation(shader.ID,"shadowMap"),7);glActiveTexture(GL_TEXTURE0);
     int lCount=(int)std::min(lights.size(),(size_t)8);
     glUniform1i(glGetUniformLocation(shader.ID,"lightCount"),lCount);
     for(int i=0;i<lCount;i++){
@@ -253,15 +360,17 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
     }
     glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);
 
-    // ── Те же общие uniform'ы (вид/проекция/свет/туман) настраиваем и на skinned-шейдере ──
+    // в”Ђв”Ђ РўРµ Р¶Рµ РѕР±С‰РёРµ uniform'С‹ (РІРёРґ/РїСЂРѕРµРєС†РёСЏ/СЃРІРµС‚/С‚СѓРјР°РЅ) РЅР°СЃС‚СЂР°РёРІР°РµРј Рё РЅР° skinned-С€РµР№РґРµСЂРµ в”Ђв”Ђ
     skinnedShader.Use();
     glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
     glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
     glUniform3f(glGetUniformLocation(skinnedShader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunDir"),sunDir.x,sunDir.y,sunDir.z);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunColor"),sunCol.x,sunCol.y,sunCol.z);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"sunIntensity"),sunFinalIntensity);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"ambientStrength"),g_AmbientStrength);
+    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunDir"),dirL.x,dirL.y,dirL.z);
+    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunColor"),colL.x,colL.y,colL.z);
+    glUniform1f(glGetUniformLocation(skinnedShader.ID,"sunIntensity"),intL);
+    glUniform3f(glGetUniformLocation(skinnedShader.ID,"ambientColor"),ambCol.r,ambCol.g,ambCol.b);
+    glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
+    glActiveTexture(GL_TEXTURE7);glBindTexture(GL_TEXTURE_2D,g_ShadowMap?g_ShadowMap->depthMap:0);glUniform1i(glGetUniformLocation(skinnedShader.ID,"shadowMap"),7);glActiveTexture(GL_TEXTURE0);
     glUniform3f(glGetUniformLocation(skinnedShader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
     glUniform1f(glGetUniformLocation(skinnedShader.ID,"fogDensity"),g_FogDensity);
     glUniform1i(glGetUniformLocation(skinnedShader.ID,"lightCount"),lCount);
@@ -275,7 +384,7 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
     shader.Use();
     for(int i=0;i<(int)objects.size();i++){
         if(!objects[i].active) continue;
-        if(i==excludeIndex) continue; // своё тело не рисуем от первого лица
+        if(i==excludeIndex) continue; // СЃРІРѕС‘ С‚РµР»Рѕ РЅРµ СЂРёСЃСѓРµРј РѕС‚ РїРµСЂРІРѕРіРѕ Р»РёС†Р°
         auto& obj=objects[i];
         if(scene.IsAlive(obj.ecsID)){auto& t=scene.GetTransform(obj.ecsID);t.Position=obj.pos;t.Rotation=obj.rot;t.Scale=obj.scale;}
         bool isSel=(selType==SelectionType::Object&&i==sel);
@@ -334,10 +443,9 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
         }
 
         drawMesh(obj,cubeVAO,sph,cyl,pyr,cap,pln);
-        if (useSkinning) shader.Use(); // возвращаем основной шейдер для следующих объектов
+        if (useSkinning) shader.Use(); // РІРѕР·РІСЂР°С‰Р°РµРј РѕСЃРЅРѕРІРЅРѕР№ С€РµР№РґРµСЂ РґР»СЏ СЃР»РµРґСѓСЋС‰РёС… РѕР±СЉРµРєС‚РѕРІ
     }
     if(!isGameView&&selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){
-        glStencilFunc(GL_NOTEQUAL,1,0xFF);glStencilMask(0x00);glDisable(GL_DEPTH_TEST);
         auto& obj=objects[sel];
         glm::mat4 model=glm::translate(glm::mat4(1),obj.pos);
         model=glm::rotate(model,glm::radians(obj.rot.x),glm::vec3(1,0,0));
@@ -348,10 +456,9 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
         glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
         glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-        glUniform1f(glGetUniformLocation(outlineShader.ID,"outlineSize"),0.012f);
-        glUniform4f(glGetUniformLocation(outlineShader.ID,"outlineColor"),.35f,.65f,1,1);
-        drawMesh(obj,cubeVAO,sph,cyl,pyr,cap,pln);
-        glStencilMask(0xFF);glStencilFunc(GL_ALWAYS,0,0xFF);glEnable(GL_DEPTH_TEST);
+        glUniform1f(glGetUniformLocation(outlineShader.ID,"outlineSize"),0.05f);
+        glUniform4f(glGetUniformLocation(outlineShader.ID,"outlineColor"),1.0f,1.0f,1.0f,1);
+        drawSelectionBox(gizmoShader.ID, model, vp, glm::vec4(0.95f,0.95f,1.0f,0.9f), obj.type==PrimitiveType::Plane?glm::vec3(0.5f,0.0f,0.5f):glm::vec3(0.5f));
     }
     if(!isGameView&&showGizmos){
         glClear(GL_DEPTH_BUFFER_BIT);
@@ -370,17 +477,18 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
                 camWorldPos = objects[sceneCameras[i].followTargetIndex].pos + sceneCameras[i].followOffset;
             float d=glm::length(camWorldPos-cam.Position);
             float iconSize=glm::clamp(d*0.10f,0.28f,1.4f);
-            drawBillboard(gizmoShader.ID,camWorldPos,isSel?glm::vec4(.3f,.9f,1,1):glm::vec4(.2f,.7f,1,1),iconSize,view,proj,false);
+            drawCameraFrustum(gizmoShader.ID,camWorldPos,sceneCameras[i].rot,sceneCameras[i].fov,isSel,vp);
         }
         for(int i=0;i<(int)objects.size();i++){
             if(objects[i].type!=PrimitiveType::Empty) continue;
+            if(objects[i].name.rfind("Folder_",0)==0) continue;
             bool isSel=(selType==SelectionType::Object&&i==sel);
             float d=glm::length(objects[i].pos-cam.Position);
             float iconSize=glm::clamp(d*0.08f,0.22f,1.1f);
             drawBillboard(gizmoShader.ID,objects[i].pos,isSel?glm::vec4(1,1,1,1):glm::vec4(.75f,.75f,.8f,1),iconSize,view,proj,false);
         }
         glm::vec3 gPos(0);bool showGiz=false;
-        if(selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){gPos=objects[sel].pos;showGiz=true;}
+        if(selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){if(objects[sel].name.rfind("Folder_",0)!=0){gPos=objects[sel].pos;showGiz=true;}}
         else if(selType==SelectionType::Light&&selLight>=0&&selLight<(int)lights.size()){gPos=lights[selLight].pos;showGiz=true;}
         else if(selType==SelectionType::Camera&&selCamera>=0&&selCamera<(int)sceneCameras.size()){
             auto& sc=sceneCameras[selCamera];
@@ -412,8 +520,8 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
         }
     }
 
-    // ── Debug.DrawLine/Sphere/Box и Particles.Spawn — только в Game View
-    //    (те же самые примитивы, что Unity рисует поверх Game view при Play) ──
+    // в”Ђв”Ђ Debug.DrawLine/Sphere/Box Рё Particles.Spawn вЂ” С‚РѕР»СЊРєРѕ РІ Game View
+    //    (С‚Рµ Р¶Рµ СЃР°РјС‹Рµ РїСЂРёРјРёС‚РёРІС‹, С‡С‚Рѕ Unity СЂРёСЃСѓРµС‚ РїРѕРІРµСЂС… Game view РїСЂРё Play) в”Ђв”Ђ
     if (isGameView) {
         VE::ParticleSystem::Get().Render(gizmoShader.ID, vp, cubeVAO);
         VE::DebugDraw::Get().Render(gizmoShader.ID, vp, (float)glfwGetTime());
@@ -438,3 +546,15 @@ bool DragFloat3XYZ(const char* label,float* v,float speed=0.05f){
     ImGui::PopID();
     return changed;
 }
+
+
+
+
+
+
+
+
+
+
+
+

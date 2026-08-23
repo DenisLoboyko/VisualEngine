@@ -1,7 +1,10 @@
-﻿external/
+﻿.vs/
+bin/
+obj/
 x64/
-.vs/
-*.obj
+Release/
+Debug/
+*.exe
 *.pdb
 *.ilk
-*.log
+*.user
