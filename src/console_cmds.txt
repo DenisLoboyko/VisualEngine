@@ -1,0 +1,121 @@
+﻿    // Dev console: engine commands (CS2-style)
+    {
+        auto& con = VE::Console::Get();
+        VE::Console::Get().AddCmd("scene_list", "list scene objects/lights/cameras", "", [&](const std::vector<std::string>&) {
+            VE::Console::Get().Print(VE::LogLevel::Echo, "objects: " + std::to_string(objects.size()) + " | lights: " + std::to_string(lights.size()) + " | cameras: " + std::to_string(sceneCameras.size()));
+        });
+        VE::Console::Get().AddCmd("scene_clear", "clear current scene", "", [&](const std::vector<std::string>&) {
+            objects.clear(); lights.clear(); sceneCameras.clear(); sel = -1;
+            VE::Console::Get().Print(VE::LogLevel::Warn, "scene cleared");
+        });
+        VE::Console::Get().AddCmd("ed_play", "enter play mode", "", [&](const std::vector<std::string>&) { StartPlay(); });
+        VE::Console::Get().AddCmd("ed_stop", "stop play mode", "", [&](const std::vector<std::string>&) { isPlaying = false; VE::Console::Get().Print(VE::LogLevel::Warn, "stopped"); });
+        VE::Console::Get().AddCmd("quit", "close engine", "", [&](const std::vector<std::string>&) { glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE); });
+        VE::Console::Get().AddCmd("gl_info", "print OpenGL info", "", [&](const std::vector<std::string>&) {
+            auto& C = VE::Console::Get();
+            C.Print(VE::LogLevel::Echo, (const char*)glGetString(GL_VERSION));
+            C.Print(VE::LogLevel::Echo, (const char*)glGetString(GL_RENDERER));
+            C.Print(VE::LogLevel::Echo, (const char*)glGetString(GL_VENDOR));
+        });
+        VE::Console::Get().AddCmd("wireframe", "toggle wireframe render", "wireframe [0|1]", [&](const std::vector<std::string>& a) {
+            bool on = a.size() > 1 ? (a[1] == "1") : !VE::Console::Get().GetBool("r_wireframe");
+            VE::Console::Get().SetBool("r_wireframe", on);
+            glPolygonMode(GL_FRONT_AND_BACK, on ? GL_LINE : GL_FILL);
+        });
+        VE::Console::Get().AddCmd("vsync", "toggle vsync", "vsync [0|1]", [&](const std::vector<std::string>& a) {
+            bool on = a.size() > 1 ? (a[1] == "1") : !VE::Console::Get().GetBool("r_vsync");
+            VE::Console::Get().SetBool("r_vsync", on);
+            glfwSwapInterval(on ? 1 : 0);
+        });
+        VE::Console::Get().AddCmd("res", "set window size", "res <w> <h>", [&](const std::vector<std::string>& a) {
+            if (a.size() < 3) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: res <w> <h>"); return; }
+            glfwSetWindowSize(glfwGetCurrentContext(), std::stoi(a[1]), std::stoi(a[2]));
+        });
+        VE::Console::Get().AddCmd("snd_play", "play sound file", "snd_play <path> [vol]", [&](const std::vector<std::string>& a) {
+            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: snd_play <path>"); return; }
+            float v = a.size() > 2 ? std::stof(a[2]) : 1.f;
+            VE::AudioEngine::Get().PlaySound(a[1], v);
+        });
+        VE::Console::Get().AddCmd("music_play", "play music loop", "music_play <path> [vol]", [&](const std::vector<std::string>& a) {
+            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: music_play <path>"); return; }
+            float v = a.size() > 2 ? std::stof(a[2]) : 1.f;
+            VE::AudioEngine::Get().PlayMusic(a[1], v);
+        });
+        VE::Console::Get().AddCmd("music_stop", "stop music", "", [&](const std::vector<std::string>&) { VE::AudioEngine::Get().StopMusic(); });
+        VE::Console::Get().AddCmd("snd_mute_toggle", "mute/unmute all", "", [&](const std::vector<std::string>&) {
+            bool m = !VE::Console::Get().GetBool("snd_mute");
+            VE::Console::Get().SetBool("snd_mute", m);
+            VE::AudioEngine::Get().SetMasterVolume(m ? 0.f : VE::Console::Get().GetFloat("snd_master", 1.f));
+        });
+        VE::Console::Get().AddCmd("exec", "execute config file line by line", "exec <path>", [&](const std::vector<std::string>& a) {
+            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: exec <path>"); return; }
+            std::ifstream f(a[1]);
+            if (!f) { VE::Console::Get().Print(VE::LogLevel::Error, "cannot open " + a[1]); return; }
+            std::string ln;
+            while (std::getline(f, ln)) if (!ln.empty() && ln[0] != '/' && ln[0] != '#') VE::Console::Get().Execute(ln);
+        });
+        VE::Console::Get().AddCmd("time", "print engine time", "", [&](const std::vector<std::string>&) {
+            VE::Console::Get().Print(VE::LogLevel::Echo, "t = " + std::to_string(glfwGetTime()));
+        });
+        VE::Console::Get().AddCmd("map", "load scene (like CS2 map)", "map <scenepath>", [&](const std::vector<std::string>& a) {
+            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: map <scenepath>"); return; }
+            VE::SceneManager::Get().RequestLoad(a[1]);
+        });
+        VE::Console::Get().AddCmd("changelevel", "alias of map", "changelevel <scenepath>", [&](const std::vector<std::string>& a) {
+            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: changelevel <scenepath>"); return; }
+            VE::SceneManager::Get().RequestLoad(a[1]);
+        });
+        VE::Console::Get().AddCmd("disconnect", "reload current scene", "", [&](const std::vector<std::string>&) { VE::SceneManager::Get().RequestReload(); });
+        VE::Console::Get().AddInt("fps_max", 0, "max fps (0 = unlimited)");
+        VE::Console::Get().AddBool("r_shadows", true, "shadow map");
+        VE::Console::Get().AddInt("r_shadow_res", 2048, "shadow map resolution");
+        VE::Console::Get().AddBool("r_outline", true, "selection outline");
+        VE::Console::Get().AddFloat("r_exposure", 1.f, "exposure multiplier");
+        VE::Console::Get().AddBool("phys_debug", false, "physics debug draw");
+        VE::Console::Get().AddFloat("phys_step", 0.0166f, "fixed physics step");
+        VE::Console::Get().AddStr("sv_name", "VisualEngine", "server name");
+        VE::Console::Get().AddBool("sv_cheats", false, "allow cheat commands");
+        VE::Console::Get().AddCmd("god", "cheat placeholder", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Warn, "god: not implemented yet"); });
+        VE::Console::Get().AddCmd("noclip", "cheat placeholder", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Warn, "noclip: not implemented yet"); });
+        VE::Console::Get().AddCmd("give", "cheat placeholder", "give <item>", [&](const std::vector<std::string>& a) { VE::Console::Get().Print(VE::LogLevel::Warn, "give: not implemented yet (" + (a.size() > 1 ? a[1] : std::string("?")) + ")"); });
+    }
+        VE::Console::Get().AddCmd("skybox", "toggle skybox", "skybox [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showSkybox; showSkybox = on; VE::Console::Get().SetBool("r_skybox", on); });
+        VE::Console::Get().AddCmd("grid", "toggle editor grid", "grid [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGrid; showGrid = on; VE::Console::Get().SetBool("r_grid", on); });
+        VE::Console::Get().AddCmd("gizmos", "toggle gizmos", "gizmos [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGizmos; showGizmos = on; VE::Console::Get().SetBool("r_gizmos", on); });
+        VE::Console::Get().AddCmd("pause", "toggle pause", "", [&](const std::vector<std::string>&) { isPaused = !isPaused; VE::Console::Get().Print(VE::LogLevel::Warn, isPaused ? "paused" : "resumed"); });
+        VE::Console::Get().AddCmd("fps_lock", "toggle 60fps lock", "fps_lock [0|1]", [&](const std::vector<std::string>& a) { g_FpsLock = a.size()>1 ? (a[1]=="1") : !g_FpsLock; });
+        VE::Console::Get().AddCmd("sel", "show/select object by index", "sel [i]", [&](const std::vector<std::string>& a) { if (a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Echo, "sel = " + std::to_string(sel)); return; } sel = std::stoi(a[1]); selType = SelectionType::Object; });
+        VE::Console::Get().AddCmd("sel_name", "select object by name", "sel_name <name>", [&](const std::vector<std::string>& a) { if (a.size()<2) return; for (int i=0;i<(int)objects.size();++i) if (objects[i].name==a[1]) { sel=i; selType=SelectionType::Object; VE::Console::Get().Print(VE::LogLevel::Echo, "selected " + a[1]); return; } VE::Console::Get().Print(VE::LogLevel::Error, "not found: " + a[1]); });
+        VE::Console::Get().AddCmd("obj_pos", "print/set selected position", "obj_pos [x y z]", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } auto& o=objects[sel]; if (a.size()>=4) { o.pos.x=std::stof(a[1]); o.pos.y=std::stof(a[2]); o.pos.z=std::stof(a[3]); } VE::Console::Get().Print(VE::LogLevel::Echo, o.name + " pos " + std::to_string(o.pos.x) + " " + std::to_string(o.pos.y) + " " + std::to_string(o.pos.z)); });
+        VE::Console::Get().AddCmd("obj_scale", "set selected scale", "obj_scale <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_scale <x y z>"); return; } auto& o=objects[sel]; o.scale.x=std::stof(a[1]); o.scale.y=std::stof(a[2]); o.scale.z=std::stof(a[3]); });
+        VE::Console::Get().AddCmd("obj_rot", "set selected rotation", "obj_rot <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rot <x y z>"); return; } auto& o=objects[sel]; o.rot.x=std::stof(a[1]); o.rot.y=std::stof(a[2]); o.rot.z=std::stof(a[3]); });
+        VE::Console::Get().AddCmd("obj_rename", "rename selected", "obj_rename <name>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rename <name>"); return; } objects[sel].name=a[1]; });
+        VE::Console::Get().AddCmd("obj_delete", "delete selected object", "", [&](const std::vector<std::string>&) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } VE::Console::Get().Print(VE::LogLevel::Warn, "deleted " + objects[sel].name); objects.erase(objects.begin()+sel); sel=-1; });
+        VE::Console::Get().AddCmd("cam_pos", "print editor camera position", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Echo, "cam " + std::to_string(camera.position.x) + " " + std::to_string(camera.position.y) + " " + std::to_string(camera.position.z)); });
+        VE::Console::Get().AddCmd("cam_fov", "show/set camera fov", "cam_fov [deg]", [&](const std::vector<std::string>& a) { if (a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Echo, "fov = " + std::to_string(camera.fov)); return; } camera.fov = std::stof(a[1]); VE::Console::Get().SetFloat("r_fov", camera.fov); });
+        VE::Console::Get().AddCmd("ui_list", "list UI elements and sprites", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Echo, "ui: " + std::to_string(uiElements.size()) + " | sprites: " + std::to_string(sprites2D.size())); });
+        VE::Console::Get().AddCmd("alias", "create command alias", "alias <name> <command...>", [&](const std::vector<std::string>& a) { if (a.size()<3) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: alias <name> <command...>"); return; } std::string s; for (size_t i=2;i<a.size();++i){ if(i>2)s+=' '; s+=a[i]; } VE::Console::Get().SetAlias(a[1], s); VE::Console::Get().Print(VE::LogLevel::Echo, "alias " + a[1] + " = " + s); });
+        VE::Console::Get().AddInt("r_shadow_bias", 0, "shadow bias (x1000)");
+        VE::Console::Get().AddFloat("r_ambient", 0.3f, "ambient light strength");
+        VE::Console::Get().AddFloat("r_sun_intensity", 1.f, "sun intensity");
+        VE::Console::Get().AddBool("r_vignette", false, "vignette post fx");
+        VE::Console::Get().AddBool("r_grain", false, "film grain");
+        VE::Console::Get().AddBool("r_ssao", false, "ambient occlusion");
+        VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
+        VE::Console::Get().AddBool("r_dof", false, "depth of field");
+        VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
+        VE::Console::Get().AddBool("r_antialias", true, "post AA");
+        VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
+        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
+        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
+        VE::Console::Get().AddBool("hud_show", true, "show HUD");
+        VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
+        VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
+        VE::Console::Get().AddBool("net_verbose", false, "net logging");
+        VE::Console::Get().AddInt("net_rate", 60, "net update rate");
+        VE::Console::Get().AddBool("dbg_draw_calls", false, "show draw calls");
+        VE::Console::Get().AddBool("dbg_normals", false, "debug normals");
+        VE::Console::Get().AddBool("dbg_colliders", false, "debug colliders");
+        VE::Console::Get().AddBool("dbg_lua", false, "lua verbose logging");
+
+

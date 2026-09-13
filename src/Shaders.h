@@ -4,14 +4,18 @@
 const char* vertSrc = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aTexCoord;
-out vec3 FragPos; out vec3 Normal; out vec2 TexCoord; out vec4 FragPosLightSpace;
+out vec3 FragPos; out vec3 Normal; out vec3 Tangent; out vec3 Bitangent; out vec2 TexCoord; out vec4 FragPosLightSpace;
 uniform mat4 model,view,projection;
 uniform mat4 lightSpaceMatrix;
 void main(){
     FragPos=vec3(model*vec4(aPos,1.0));
     Normal=mat3(transpose(inverse(model)))*aNormal;
+Tangent=mat3(model)*aTangent;
+Bitangent=mat3(model)*aBitangent;
     TexCoord=aTexCoord;
     gl_Position=projection*view*vec4(FragPos,1.0);
     FragPosLightSpace = lightSpaceMatrix * vec4(FragPos, 1.0);
@@ -23,11 +27,13 @@ void main(){
 const char* vertSkinnedSrc = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aTexCoord;
 layout(location=3) in vec4 aBoneIDs;   // РїСЂРёС…РѕРґСЏС‚ РєР°Рє float, РїСЂРёРІРѕРґРёРј Рє int
 layout(location=4) in vec4 aWeights;
-out vec3 FragPos; out vec3 Normal; out vec2 TexCoord; out vec4 FragPosLightSpace;
+out vec3 FragPos; out vec3 Normal; out vec3 Tangent; out vec3 Bitangent; out vec2 TexCoord; out vec4 FragPosLightSpace;
 uniform mat4 model,view,projection;
 const int MAX_BONES=100;
 uniform mat4 boneMatrices[MAX_BONES];
@@ -55,9 +61,14 @@ void main(){
 })";;
 const char* fragSrc = R"(
 #version 330 core
-in vec3 FragPos,Normal; in vec2 TexCoord; in vec4 FragPosLightSpace;
+in vec3 FragPos,Normal,Tangent,Bitangent; in vec2 TexCoord; in vec4 FragPosLightSpace;
 out vec4 FragColor;
 uniform sampler2D uTexture;
+uniform sampler2D uNormalMap;
+uniform sampler2D uEmissiveMap;
+uniform vec3 uEmissiveColor;
+uniform bool useNormalMap;
+uniform bool useEmissiveMap;
 uniform bool useTexture;
 uniform vec2 uTiling;
 uniform sampler2D uLayer2Texture;
@@ -84,16 +95,27 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir) {
     projCoords = projCoords * 0.5 + 0.5;
     if (projCoords.z > 1.0) return 0.0;
     float currentDepth = projCoords.z;
-    float bias = max(0.0015 * (1.0 - dot(normal, lightDir)), 0.0004);
-    float shadow = 0.0;
+    float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.001);
     vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-            float pcfDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
-            shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
-        }
+    vec2 pd[12];
+    pd[0]=vec2(-0.942,-0.399);pd[1]=vec2(0.946,-0.769);pd[2]=vec2(-0.094,-0.929);
+    pd[3]=vec2(0.345,0.294);pd[4]=vec2(-0.916,0.458);pd[5]=vec2(-0.815,-0.879);
+    pd[6]=vec2(-0.383,0.277);pd[7]=vec2(0.975,0.756);pd[8]=vec2(0.443,-0.975);
+    pd[9]=vec2(0.537,-0.474);pd[10]=vec2(-0.265,-0.419);pd[11]=vec2(0.792,0.191);
+    float blockerSum = 0.0; int nBlockers = 0;
+    for (int i = 0; i < 12; i++) {
+        float d = texture(shadowMap, projCoords.xy + pd[i] * texelSize * 8.0).r;
+        if (d < currentDepth - bias) { blockerSum += d; nBlockers++; }
     }
-    return shadow / 9.0;
+    if (nBlockers == 0) return 0.0;
+    float avgBlocker = blockerSum / float(nBlockers);
+    float penumbra = clamp((currentDepth - avgBlocker) / avgBlocker * 24.0, 1.0, 12.0);
+    float shadow = 0.0;
+    for (int i = 0; i < 12; i++) {
+        float d = texture(shadowMap, projCoords.xy + pd[i] * texelSize * penumbra).r;
+        shadow += (currentDepth - bias > d) ? 1.0 : 0.0;
+    }
+    return shadow / 12.0;
 }
 void main(){
     vec3 baseColor;
@@ -110,6 +132,13 @@ void main(){
         baseColor = objectColor;
     }
     vec3 norm=normalize(Normal);
+    if (useNormalMap) {
+        vec3 T = normalize(Tangent);
+        vec3 B = normalize(Bitangent);
+        mat3 TBN = mat3(T, B, norm);
+        vec3 mapN = texture(uNormalMap, TexCoord).rgb * 2.0 - 1.0;
+        norm = normalize(TBN * mapN);
+    }
     vec3 vd=normalize(viewPos-FragPos);
     vec3 result=ambientColor*baseColor;
 
@@ -138,11 +167,18 @@ void main(){
         float fogFactor = clamp(1.0 - exp(-camDist*fogDensity*0.04), 0.0, 1.0);
         result = mix(result, fogColor, fogFactor);
     }
-    FragColor=vec4(result,1.0);
+
+    vec3 emissive = uEmissiveColor;
+
+    if (useEmissiveMap) emissive *= texture(uEmissiveMap, TexCoord).rgb;
+
+    FragColor=vec4(result + emissive,1.0);
 })";
 const char* outlineVert = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent;
 layout(location=1) in vec3 aNormal;
 uniform mat4 model,view,projection; uniform float outlineSize;
 void main(){ gl_Position=projection*view*model*vec4(aPos+aNormal*outlineSize,1.0); })";
@@ -153,6 +189,8 @@ void main(){ FragColor=outlineColor; })";
 const char* gridVert = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent;
 uniform mat4 model,view,projection;
 uniform mat4 lightSpaceMatrix;
 void main(){ gl_Position=projection*view*model*vec4(aPos,1.0); })";
@@ -162,7 +200,9 @@ out vec4 FragColor; uniform vec3 gridColor;
 void main(){ FragColor=vec4(gridColor,1.0); })";
 const char* gizmoVert = R"(
 #version 330 core
-layout(location=0) in vec3 aPos; uniform mat4 mvp;
+layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent; uniform mat4 mvp;
 void main(){ gl_Position=mvp*vec4(aPos,1.0); })";
 const char* gizmoFrag = R"(
 #version 330 core
@@ -170,7 +210,9 @@ out vec4 FragColor; uniform vec4 color;
 void main(){ FragColor=color; })";
 const char* skyboxVert = R"(
 #version 330 core
-layout(location=0) in vec3 aPos; out vec3 TexCoords;
+layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent; out vec3 TexCoords;
 uniform mat4 view,projection;
 void main(){ TexCoords=aPos; vec4 pos=projection*view*vec4(aPos,1.0); gl_Position=pos.xyww; })";
 const char* skyboxFrag = R"(
@@ -279,7 +321,7 @@ void main(){
         result += texture(uImage, vUV + dir*float(i)).rgb * weights[i];
         result += texture(uImage, vUV - dir*float(i)).rgb * weights[i];
     }
-    FragColor = vec4(result,1.0);
+    FragColor = vec4(result, 1.0);
 })";
 
 const char* compositeFragSrc = R"(
@@ -311,6 +353,8 @@ enum class SelectionType { None, Object, Light, Camera, Environment };
 const char* depthVertSrc = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent;
 uniform mat4 model;
 uniform mat4 lightSpaceMatrix;
 void main(){
@@ -327,6 +371,8 @@ void main(){
 const char* depthSkinnedVertSrc = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=3) in vec3 aTangent;
+layout(location=4) in vec3 aBitangent;
 layout(location=3) in vec4 aBoneIDs;
 layout(location=4) in vec4 aWeights;
 uniform mat4 model;
@@ -347,6 +393,94 @@ void main(){
     if(totalWeight < 0.001){ skinnedPos = vec4(aPos,1.0); }
     gl_Position = lightSpaceMatrix * model * skinnedPos;
 })";
+
+
+
+
+
+
+
+
+
+const char* ssaoFragSrc = R"(
+#version 330 core
+in vec2 vUV;
+out float outAO;
+uniform sampler2DMS uDepth;
+uniform mat4 uProj;
+uniform mat4 uInvProj;
+uniform vec2 uScreen;
+uniform float uRadius;
+vec3 viewPos(vec2 uv){
+    float d = texelFetch(uDepth, ivec2(uv*vec2(textureSize(uDepth))), 0).r;
+    vec4 v = uInvProj * vec4(uv*2.0-1.0, d*2.0-1.0, 1.0);
+    return v.xyz / v.w;
+}
+void main(){
+    float d0 = texelFetch(uDepth, ivec2(vUV*vec2(textureSize(uDepth))), 0).r;
+    if (d0 > 0.9999) { outAO = 1.0; return; }
+    vec3 P = viewPos(vUV);
+    vec3 P1 = viewPos(vUV + vec2(1.0/uScreen.x, 0.0));
+    vec3 P2 = viewPos(vUV + vec2(0.0, 1.0/uScreen.y));
+    vec3 N = normalize(cross(P1 - P, P2 - P));
+    vec3 K[8];
+    K[0]=vec3(0.53,0.18,-0.71); K[1]=vec3(-0.22,0.89,-0.41);
+    K[2]=vec3(0.81,-0.33,-0.48); K[3]=vec3(-0.67,0.12,-0.73);
+    K[4]=vec3(0.19,0.95,-0.24); K[5]=vec3(-0.41,-0.61,-0.67);
+    K[6]=vec3(0.62,-0.77,-0.16); K[7]=vec3(-0.09,0.41,-0.91);
+    float ao = 0.0;
+    for (int i = 0; i < 8; i++) {
+        vec3 k = K[i];
+        if (dot(k, N) < 0.0) k = reflect(k, N);
+        vec3 dir = normalize(k + N * 0.2);
+        float len = 0.3 + 0.7 * float(i % 4) / 3.0;
+        vec3 S = P + dir * (uRadius * len);
+        vec4 off = uProj * vec4(S, 1.0);
+        off.xyz /= off.w;
+        vec2 suv = off.xy * 0.5 + 0.5;
+        if (suv.x<0.0||suv.x>1.0||suv.y<0.0||suv.y>1.0) continue;
+        vec3 SP = viewPos(suv);
+        float diff = SP.z - S.z;
+        float occ = (diff > 0.02) ? 1.0 : 0.0;
+        float rc = 1.0 - smoothstep(uRadius*0.5, uRadius, abs(diff));
+        ao += occ * rc;
+    }
+    outAO = clamp(1.0 - ao/8.0, 0.0, 1.0);
+}
+)";
+const char* ssaoApplyFragSrc = R"(
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uScene;
+uniform sampler2D uAO;
+void main(){
+    float t = 1.0/1024.0;
+    float ao = (texture(uAO,vUV).r + texture(uAO,vUV+vec2(t,0)).r + texture(uAO,vUV-vec2(t,0)).r + texture(uAO,vUV+vec2(0,t)).r + texture(uAO,vUV-vec2(0,t)).r) / 5.0;
+    FragColor = vec4(texture(uScene,vUV).rgb * mix(1.0, ao, 0.85), 
+
+1.0);
+}
+)";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

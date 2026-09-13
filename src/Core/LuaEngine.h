@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <string>
 #include <iostream>
 #include <fstream>
@@ -14,20 +14,20 @@ extern "C" {
 
 namespace VE {
 
-    // Forward-declaration — сама реализация подключается через LuaBindings.h
-    // ПОСЛЕ класса LuaEngine (см. #include внизу файла). Без этой строки
-    // вызов VE::LuaBindings::register_all_bindings(L) внутри registerFunctions()
-    // не компилируется: тело inline-метода класса разворачивается компилятором
-    // "как будто сразу после закрывающей } класса" — то есть ДО того места,
-    // где обычный #include внизу файла успел бы объявить namespace LuaBindings.
+    // Forward-declaration вЂ” СЃР°РјР° СЂРµР°Р»РёР·Р°С†РёСЏ РїРѕРґРєР»СЋС‡Р°РµС‚СЃСЏ С‡РµСЂРµР· LuaBindings.h
+    // РџРћРЎР›Р• РєР»Р°СЃСЃР° LuaEngine (СЃРј. #include РІРЅРёР·Сѓ С„Р°Р№Р»Р°). Р‘РµР· СЌС‚РѕР№ СЃС‚СЂРѕРєРё
+    // РІС‹Р·РѕРІ VE::LuaBindings::register_all_bindings(L) РІРЅСѓС‚СЂРё registerFunctions()
+    // РЅРµ РєРѕРјРїРёР»РёСЂСѓРµС‚СЃСЏ: С‚РµР»Рѕ inline-РјРµС‚РѕРґР° РєР»Р°СЃСЃР° СЂР°Р·РІРѕСЂР°С‡РёРІР°РµС‚СЃСЏ РєРѕРјРїРёР»СЏС‚РѕСЂРѕРј
+    // "РєР°Рє Р±СѓРґС‚Рѕ СЃСЂР°Р·Сѓ РїРѕСЃР»Рµ Р·Р°РєСЂС‹РІР°СЋС‰РµР№ } РєР»Р°СЃСЃР°" вЂ” С‚Рѕ РµСЃС‚СЊ Р”Рћ С‚РѕРіРѕ РјРµСЃС‚Р°,
+    // РіРґРµ РѕР±С‹С‡РЅС‹Р№ #include РІРЅРёР·Сѓ С„Р°Р№Р»Р° СѓСЃРїРµР» Р±С‹ РѕР±СЉСЏРІРёС‚СЊ namespace LuaBindings.
     namespace LuaBindings { void register_all_bindings(lua_State* L); }
 
     class LuaEngine
     {
     public:
         lua_State* L = nullptr;
-        bool started = false;       // вызван ли onStart() уже (по одному на скрипт)
-        std::string scriptPath;     // какому файлу принадлежит этот инстанс (для отладки/показа)
+        bool started = false;       // РІС‹Р·РІР°РЅ Р»Рё onStart() СѓР¶Рµ (РїРѕ РѕРґРЅРѕРјСѓ РЅР° СЃРєСЂРёРїС‚)
+        std::string scriptPath;     // РєР°РєРѕРјСѓ С„Р°Р№Р»Сѓ РїСЂРёРЅР°РґР»РµР¶РёС‚ СЌС‚РѕС‚ РёРЅСЃС‚Р°РЅСЃ (РґР»СЏ РѕС‚Р»Р°РґРєРё/РїРѕРєР°Р·Р°)
 
         // Object transform
         float objX=0,objY=0,objZ=0;
@@ -35,11 +35,11 @@ namespace VE {
         float objScaleX=1,objScaleY=1,objScaleZ=1;
         // Object color
         float objR=1,objG=1,objB=1;
-        // Имя своего объекта — read-only для скрипта (this.name), нужно для
-        // Scene.Destroy(this.name) / поиска себя же через Scene.GetPosition и т.п.
+        // РРјСЏ СЃРІРѕРµРіРѕ РѕР±СЉРµРєС‚Р° вЂ” read-only РґР»СЏ СЃРєСЂРёРїС‚Р° (this.name), РЅСѓР¶РЅРѕ РґР»СЏ
+        // Scene.Destroy(this.name) / РїРѕРёСЃРєР° СЃРµР±СЏ Р¶Рµ С‡РµСЂРµР· Scene.GetPosition Рё С‚.Рї.
         std::string objName;
-        // Отдельный "взгляд вверх/вниз" для FPS-камеры — НЕ вращает саму модель,
-        // используется только для follow-камеры (см. lookPitch у SceneObject)
+        // РћС‚РґРµР»СЊРЅС‹Р№ "РІР·РіР»СЏРґ РІРІРµСЂС…/РІРЅРёР·" РґР»СЏ FPS-РєР°РјРµСЂС‹ вЂ” РќР• РІСЂР°С‰Р°РµС‚ СЃР°РјСѓ РјРѕРґРµР»СЊ,
+        // РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ С‚РѕР»СЊРєРѕ РґР»СЏ follow-РєР°РјРµСЂС‹ (СЃРј. lookPitch Сѓ SceneObject)
         float objLookPitch=0;
 
         std::string printOutput;
@@ -53,7 +53,7 @@ namespace VE {
 
         ~LuaEngine() { if(L) lua_close(L); }
 
-        // Устанавливаем GLFW окно для Input
+        // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј GLFW РѕРєРЅРѕ РґР»СЏ Input
         void setWindow(GLFWwindow* w)
         {
             lua_pushlightuserdata(L, w);
@@ -82,7 +82,7 @@ namespace VE {
 
         void callOnStart()  { callFunction("onStart"); }
 
-        // other.name, other.id передаются в Lua как таблица "other"
+        // other.name, other.id РїРµСЂРµРґР°СЋС‚СЃСЏ РІ Lua РєР°Рє С‚Р°Р±Р»РёС†Р° "other"
         void callOnCollisionEnter(const std::string& otherName, int otherID) { callCollisionFn("onCollisionEnter", otherName, otherID); }
         void callOnCollisionExit (const std::string& otherName, int otherID) { callCollisionFn("onCollisionExit",  otherName, otherID); }
         void callOnTriggerEnter  (const std::string& otherName, int otherID) { callCollisionFn("onTriggerEnter",   otherName, otherID); }
@@ -90,8 +90,8 @@ namespace VE {
 
         void callOnUpdate(float dt)
         {
-            // ── Обновляем Time.deltaTime реальным значением этого кадра ──
-            // (раньше было захардкожено 0.016 и никогда не менялось — баг)
+            // в”Ђв”Ђ РћР±РЅРѕРІР»СЏРµРј Time.deltaTime СЂРµР°Р»СЊРЅС‹Рј Р·РЅР°С‡РµРЅРёРµРј СЌС‚РѕРіРѕ РєР°РґСЂР° в”Ђв”Ђ
+            // (СЂР°РЅСЊС€Рµ Р±С‹Р»Рѕ Р·Р°С…Р°СЂРґРєРѕР¶РµРЅРѕ 0.016 Рё РЅРёРєРѕРіРґР° РЅРµ РјРµРЅСЏР»РѕСЃСЊ вЂ” Р±Р°Рі)
             lua_getglobal(L,"Time");
             if(lua_istable(L,-1)){
                 lua_pushstring(L,"deltaTime");
@@ -154,7 +154,7 @@ namespace VE {
         }
 
     private:
-        // Вызвать onCollisionEnter(other) и т.п. — собирает таблицу other={name=...,id=...}
+        // Р’С‹Р·РІР°С‚СЊ onCollisionEnter(other) Рё С‚.Рї. вЂ” СЃРѕР±РёСЂР°РµС‚ С‚Р°Р±Р»РёС†Сѓ other={name=...,id=...}
         void callCollisionFn(const char* fnName, const std::string& otherName, int otherID)
         {
             lua_getglobal(L, fnName);
@@ -201,7 +201,7 @@ namespace VE {
 
         void registerFunctions()
         {
-            // Input таблица
+            // Input С‚Р°Р±Р»РёС†Р°
             lua_newtable(L);
 
             // Input.GetKey("W") -> bool
@@ -264,8 +264,8 @@ namespace VE {
             lua_settable(L,-3);
 
             // Input.GetMouseDeltaX() / GetMouseDeltaY() -> float
-            // ╨Ф╨╗╤П FPS-╨║╨░╨╝╨╡╤А╤Л: ╨╜╨░╤Б╨║╨╛╨╗╤М╨║╨╛ ╨╝╤Л╤И╤М ╤Б╨┤╨▓╨╕╨╜╤Г╨╗╨░╤Б╤М ╤Б ╨┐╤А╨╛╤И╨╗╨╛╨│╨╛ ╨║╨░╨┤╤А╨░.
-            // ╨Ч╨╜╨░╤З╨╡╨╜╨╕╤П ╨╖╨░╨┐╨╛╨╗╨╜╤П╤О╤В╤Б╤П ╨╕╨╖ main.cpp ╤З╨╡╤А╨╡╨╖ extern ╨┐╨╡╤А╨╡╨╝╨╡╨╜╨╜╤Л╨╡.
+            // в•ЁР¤в•Ёв•—в•¤Рџ FPS-в•Ёв•‘в•Ёв–‘в•Ёв•ќв•Ёв•Ўв•¤Рђв•¤Р›: в•Ёв•њв•Ёв–‘в•¤Р‘в•Ёв•‘в•Ёв•›в•Ёв•—в•¤Рњв•Ёв•‘в•Ёв•› в•Ёв•ќв•¤Р›в•¤Рв•¤Рњ в•¤Р‘в•Ёв”¤в•Ёв–“в•Ёв••в•Ёв•њв•¤Р“в•Ёв•—в•Ёв–‘в•¤Р‘в•¤Рњ в•¤Р‘ в•Ёв”ђв•¤Рђв•Ёв•›в•¤Рв•Ёв•—в•Ёв•›в•Ёв”‚в•Ёв•› в•Ёв•‘в•Ёв–‘в•Ёв”¤в•¤Рђв•Ёв–‘.
+            // в•ЁР§в•Ёв•њв•Ёв–‘в•¤Р—в•Ёв•Ўв•Ёв•њв•Ёв••в•¤Рџ в•Ёв•–в•Ёв–‘в•Ёв”ђв•Ёв•›в•Ёв•—в•Ёв•њв•¤Рџв•¤Рћв•¤Р’в•¤Р‘в•¤Рџ в•Ёв••в•Ёв•– main.cpp в•¤Р—в•Ёв•Ўв•¤Рђв•Ёв•Ўв•Ёв•– extern в•Ёв”ђв•Ёв•Ўв•¤Рђв•Ёв•Ўв•Ёв•ќв•Ёв•Ўв•Ёв•њв•Ёв•њв•¤Р›в•Ёв•Ў.
             lua_pushstring(L,"GetMouseDeltaX");
             lua_pushcfunction(L,[](lua_State* L)->int{
                 extern double g_RawMouseDX;
@@ -291,7 +291,7 @@ namespace VE {
             lua_settable(L,-3);
             lua_setglobal(L,"Time");
 
-            // math уже есть в Lua, но добавим удобные алиасы
+            // math СѓР¶Рµ РµСЃС‚СЊ РІ Lua, РЅРѕ РґРѕР±Р°РІРёРј СѓРґРѕР±РЅС‹Рµ Р°Р»РёР°СЃС‹
             lua_register(L,"print",[](lua_State* L)->int{
                 int n=lua_gettop(L);
                 std::string out;
@@ -305,11 +305,13 @@ namespace VE {
                 return 0;
             });
 
-            // Регистрируем все расширенные биндинги
+            // Р РµРіРёСЃС‚СЂРёСЂСѓРµРј РІСЃРµ СЂР°СЃС€РёСЂРµРЅРЅС‹Рµ Р±РёРЅРґРёРЅРіРё
             VE::LuaBindings::register_all_bindings(L);
+        { extern int VE_LuaInstAdd(lua_State*); extern int VE_LuaInstRemove(lua_State*); extern int VE_LuaInstSetActive(lua_State*); extern int VE_LuaInstClear(lua_State*); lua_newtable(L); lua_pushcfunction(L,VE_LuaInstAdd); lua_setfield(L,-2,"addCube"); lua_pushcfunction(L,VE_LuaInstRemove); lua_setfield(L,-2,"remove"); lua_pushcfunction(L,VE_LuaInstSetActive); lua_setfield(L,-2,"setActive"); lua_pushcfunction(L,VE_LuaInstClear); lua_setfield(L,-2,"clear"); lua_setglobal(L,"Inst"); }
         }
     };
 }
 
-// Включаем LuaBindings ПОСЛЕ определения пространства VE и класса LuaEngine
-#include "LuaBindings.h"  // из папки src/Core/
+// Р’РєР»СЋС‡Р°РµРј LuaBindings РџРћРЎР›Р• РѕРїСЂРµРґРµР»РµРЅРёСЏ РїСЂРѕСЃС‚СЂР°РЅСЃС‚РІР° VE Рё РєР»Р°СЃСЃР° LuaEngine
+#include "LuaBindings.h"  // РёР· РїР°РїРєРё src/Core/
+

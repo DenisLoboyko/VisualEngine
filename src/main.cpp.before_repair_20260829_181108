@@ -1,9 +1,11 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 #define MINIAUDIO_IMPLEMENTATION
+#include "imnodes.h"
 #include "Core/AudioEngine.h"
 #include "Core/SceneManager.h"
 #include "Core/HUD.h"
 #include "Core/SaveSystem.h"
+#include "Core/BuildSystem.h"
 
 #include "Core/Window.h"
 #include "Core/Shader.h"
@@ -38,6 +40,8 @@ static bool g_HasCtrl=false;
 
 #include <iostream>
 #include <vector>
+#include <unordered_map>
+#include <chrono>
 #include <string>
 #include <algorithm>
 #include <memory>
@@ -45,11 +49,12 @@ static bool g_HasCtrl=false;
 #include <sstream>
 #include <filesystem>
 #include <cmath>
+#include <cstring>
 
 namespace fs = std::filesystem;
 
 
-// в”Ђв”Ђ РњРѕРґСѓР»Рё РґРІРёР¶РєР° (РІС‹РЅРµСЃРµРЅС‹ РёР· main.cpp РґР»СЏ С‡РёС‚Р°РµРјРѕСЃС‚Рё) в”Ђв”Ђ
+// ── Модули движка (вынесены из main.cpp для читаемости) ──
 #include "Shaders.h"
 #include "SceneTypes.h"
 #include "Material.h"
@@ -61,70 +66,12 @@ namespace fs = std::filesystem;
 #include "Sprites2D.h"
 #include "UI2D.h"
 #include "UILua.h"
-#include "Core/Console.h"
-#include "InstanceRenderer.h"
+#include "GameLua.h"
 std::vector<UIElement> uiElements;
 int selUI = -1;
 std::vector<Sprite2D> sprites2D;
 int selSprite2D = -1;
-
-void VE_ApplyMaterialToSelected(float r, float g, float b, float metallic, float roughness) {
-    if (g_LuaObjectsPtr && !g_LuaObjectsPtr->empty()) {
-        auto& obj = (*g_LuaObjectsPtr)[0];
-        if (obj.materials.empty()) obj.materials.emplace_back();
-        auto& mat = obj.materials[0];
-        mat.color = glm::vec3(r, g, b);
-        mat.metallic = metallic;
-        mat.roughness = roughness;
-        obj.color = mat.color;
-    }
-}
-
-int VE_LuaInstAdd(lua_State* L) {
-    const char* p = luaL_checkstring(L, 1);
-    float x = (float)luaL_checknumber(L, 2), y = (float)luaL_checknumber(L, 3), z = (float)luaL_checknumber(L, 4);
-    float sx = (float)luaL_checknumber(L, 5), sy = (float)luaL_checknumber(L, 6), sz = (float)luaL_checknumber(L, 7);
-    float u = (float)luaL_checknumber(L, 8), v = (float)luaL_checknumber(L, 9);
-    std::string s = p;
-    namespace fs = std::filesystem;
-    if (!fs::exists(s)) {
-        const char* pre[] = { "project/", "../", "../../", "../../project/", "../project/" };
-        for (auto p2 : pre) {
-            std::string candidate = std::string(p2) + s;
-            if (fs::exists(candidate)) { s = candidate; break; }
-        }
-    }
-    static std::map<std::string, GLuint> tcache;
-    GLuint t = 0;
-    auto it = tcache.find(s);
-    if (it != tcache.end()) t = it->second;
-    else {
-        t = VE::LoadTextureRaw(s);
-        if (t) { glBindTexture(GL_TEXTURE_2D, t); glGenerateMipmap(GL_TEXTURE_2D); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); }
-        tcache[s] = t;
-    }
-    lua_pushinteger(L, VE::InstanceRenderer::Get().Add(t, glm::vec3(x, y, z), glm::vec3(sx, sy, sz), glm::vec2(u, v)));
-    return 1;
-}
-
-int VE_LuaInstRemove(lua_State* L) {
-    VE::InstanceRenderer::Get().Remove((int)luaL_checkinteger(L, 1));
-    return 0;
-}
-
-int VE_LuaInstSetActive(lua_State* L) {
-    VE::InstanceRenderer::Get().SetActive((int)luaL_checkinteger(L, 1), lua_toboolean(L, 2) != 0);
-    return 0;
-}
-
-int VE_LuaInstClear(lua_State* L) {
-    VE::InstanceRenderer::Get().Clear();
-    return 0;
-}
-
 static void UI_TexPick(int idx, const std::string& p){
-
-
     if (idx<0 || idx>=(int)uiElements.size()) return;
     GLuint t = VE::LoadTextureRaw(p);
     if (t) { uiElements[idx].tex=t;
@@ -135,15 +82,22 @@ static void UI_TexPick(int idx, const std::string& p){
 #include "PrefabIO.h"
 #include "EditorIcons.h"
 #include "ShadowMap.h"
+bool showGraphicsSettings = false;
+int g_DrawCallCount = 0;
+static std::chrono::high_resolution_clock::time_point g_pt0, g_pt1, g_pt2, g_pt3;
+static float g_msScene=0, g_msGame=0, g_msBloom=0;
+float g_camPosX=0, g_camPosY=0, g_camPosZ=0;
+float g_camYaw=0, g_camPitch=0;
+namespace GameLua { void* g_window = nullptr; }
 VE::ShadowMap* g_ShadowMap = nullptr;
 VE::Shader* g_DepthShader = nullptr;
 VE::Shader* g_DepthSkinnedShader = nullptr;
 glm::mat4 g_ShadowLightSpace(1.0f);
 
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-// Р¤СѓРЅРєС†РёСЏ РґР»СЏ РґРёРЅР°РјРёС‡РµСЃРєРѕРіРѕ СЂРµСЃР°Р№Р·Р° Viewport FBO
-// Р’С‹Р·С‹РІР°РµС‚СЃСЏ РєРѕРіРґР° СЂР°Р·РјРµСЂ ImGui Viewport РёР·РјРµРЅРёР»СЃСЏ
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// ---------------------------------------------------------═══════════════════════════════════════════════════════════════
+// Функция для динамического ресайза Viewport FBO
+// Вызывается когда размер ImGui Viewport изменился
+// ---------------------------------------------------------═══════════════════════════════════════════════════════════════
 void ResizeViewportFBO(int newWidth, int newHeight, 
                        unsigned int& sceneMSFBO, unsigned int& sceneMSColorRBO, unsigned int& sceneMSDepthRBO,
                        unsigned int& gameMSFBO, unsigned int& gameMSColorRBO, unsigned int& gameMSDepthRBO,
@@ -152,14 +106,14 @@ void ResizeViewportFBO(int newWidth, int newHeight,
                        unsigned int& sceneFBO, unsigned int& sceneTex, unsigned int& sceneRBO,
                        unsigned int& gameFBO, unsigned int& gameTex, unsigned int& gameRBO)
 {
-    // РњРёРЅРёРјР°Р»СЊРЅС‹Р№ СЂР°Р·РјРµСЂ - 100x100
+    // Минимальный размер - 100x100
     if (newWidth < 100) newWidth = 100;
     if (newHeight < 100) newHeight = 100;
 
 
     const int MSAA_SAMPLES = 4;
 
-    // ---------------------------------------------------------в•ђ РЈРґР°Р»СЏРµРј СЃС‚Р°СЂС‹Рµ MSAA FBO в•ђв•ђ
+    // ---------------------------------------------------------═ Удаляем старые MSAA FBO ══
     glDeleteFramebuffers(1, &sceneMSFBO);
     glDeleteRenderbuffers(1, &sceneMSColorRBO);
     glDeleteRenderbuffers(1, &sceneMSDepthRBO);
@@ -167,7 +121,7 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glDeleteRenderbuffers(1, &gameMSColorRBO);
     glDeleteRenderbuffers(1, &gameMSDepthRBO);
 
-    // ---------------------------------------------------------в•ђ РЈРґР°Р»СЏРµРј СЃС‚Р°СЂС‹Рµ Resolve FBO в•ђв•ђ
+    // ---------------------------------------------------------═ Удаляем старые Resolve FBO ══
     glDeleteFramebuffers(1, &sceneFBO);
     glDeleteTextures(1, &sceneTex);
     glDeleteRenderbuffers(1, &sceneRBO);
@@ -175,15 +129,15 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glDeleteTextures(1, &gameTex);
     glDeleteRenderbuffers(1, &gameRBO);
 
-    // ---------------------------------------------------------в•ђ РЈРґР°Р»СЏРµРј СЃС‚Р°СЂС‹Рµ HDR FBO (РµСЃР»Рё РµСЃС‚СЊ) в•ђв•ђ
+    // ---------------------------------------------------------═ Удаляем старые HDR FBO (если есть) ══
     glDeleteFramebuffers(1, &sceneHDRFBO);
     glDeleteTextures(1, &sceneHDRTex);
     glDeleteFramebuffers(1, &gameHDRFBO);
     glDeleteTextures(1, &gameHDRTex);
 
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Scene MSAA FBO
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------═══════════════════════════════════════════════════════════════
+    // Пересоздаём Scene MSAA FBO
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
     glGenFramebuffers(1, &sceneMSFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneMSFBO);
 
@@ -199,9 +153,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Game MSAA FBO
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
+    // Пересоздаём Game MSAA FBO
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
     glGenFramebuffers(1, &gameMSFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gameMSFBO);
 
@@ -217,9 +171,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Scene Resolve FBO (MSAA в†’ single-sampled)
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
+    // Пересоздаём Scene Resolve FBO (MSAA → single-sampled)
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
     glGenFramebuffers(1, &sceneFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
 
@@ -237,9 +191,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    // РџРµСЂРµСЃРѕР·РґР°С‘Рј Game Resolve FBO (MSAA в†’ single-sampled)
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
+    // Пересоздаём Game Resolve FBO (MSAA → single-sampled)
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
     glGenFramebuffers(1, &gameFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gameFBO);
 
@@ -257,9 +211,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    // РџРµСЂРµСЃРѕР·РґР°С‘Рј HDR FBO РґР»СЏ Scene
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
+    // Пересоздаём HDR FBO для Scene
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
     glGenFramebuffers(1, &sceneHDRFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, sceneHDRFBO);
     glGenTextures(1, &sceneHDRTex);
@@ -272,9 +226,9 @@ void ResizeViewportFBO(int newWidth, int newHeight,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneHDRTex, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    // РџРµСЂРµСЃРѕР·РґР°С‘Рј HDR FBO РґР»СЏ Game
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
+    // Пересоздаём HDR FBO для Game
+    // ---------------------------------------------------------═════════════════════════════════════════════════════════════════
     glGenFramebuffers(1, &gameHDRFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, gameHDRFBO);
     glGenTextures(1, &gameHDRTex);
@@ -289,853 +243,15 @@ void ResizeViewportFBO(int newWidth, int newHeight,
 
 }
 
+// ── LevelGen helpers: name-based lookup for the Lua procedural API ──
+static bool g_LuaCamActive = false;
+static std::vector<SceneObject>* LG_Objs(lua_State* L){ lua_getglobal(L,"__objs"); auto* p=(std::vector<SceneObject>*)lua_touserdata(L,-1); lua_pop(L,1); return p; }
+static std::vector<LightObject>* LG_Lights(lua_State* L){ lua_getglobal(L,"__lights"); auto* p=(std::vector<LightObject>*)lua_touserdata(L,-1); lua_pop(L,1); return p; }
+static SceneObject* LG_Find(lua_State* L, const char* n){ auto* o=LG_Objs(L); if(!o) return nullptr; for(auto& s:*o) if(s.name==n) return &s; return nullptr; }
 int main(int argc, char** argv)
 {
-    std::cout<<"Engine starting..."<<std::endl;
 
-    // в”Ђв”Ђ Р Р°Р·Р±РѕСЂ Р°СЂРіСѓРјРµРЅС‚РѕРІ РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРё: --play "РїСѓС‚СЊ/Рє/СЃС†РµРЅРµ" / --project "РїСѓС‚СЊ" в”Ђв”Ђ
-    for (int i=1;i<argc;i++) {
-        std::string a = argv[i];
-        if (a=="--play" && i+1<argc) {
-            g_PlayerMode = false; // player mode removed;
-            g_PlayerScenePath = argv[i+1];
-            i++;
-        }
-        else if (a=="--project" && i+1<argc) {
-            g_OverrideProjectRoot = argv[i+1];
-            i++;
-        }
-    }
-    // в”Ђв”Ђ Р•СЃР»Рё Р°СЂРіСѓРјРµРЅС‚ РЅРµ РїРµСЂРµРґР°РЅ вЂ” РёС‰РµРј player.cfg СЂСЏРґРѕРј СЃ .exe в”Ђв”Ђ
-    // (С‚Р°Рє СЃРѕР±СЂР°РЅРЅР°СЏ С‡РµСЂРµР· Build РёРіСЂР° Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ РїСЂРѕСЃС‚Рѕ РґРІРѕР№РЅС‹Рј
-    //  РєР»РёРєРѕРј, Р±РµР· РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РІСЂСѓС‡РЅСѓСЋ РїСЂРѕРїРёСЃС‹РІР°С‚СЊ Р°СЂРіСѓРјРµРЅС‚С‹)
-    if (!g_PlayerMode && fs::exists("player.cfg")) {
-        std::ifstream pf("player.cfg");
-        std::string scenePath;
-        if (pf && std::getline(pf, scenePath) && !scenePath.empty()) {
-            g_PlayerMode = false; // player mode removed;
-            g_PlayerScenePath = scenePath;
-        }
-    }
-
-    g_Prefs.Load();
-    camera.Speed       = g_Prefs.camSpeed;
-    camera.Sensitivity = g_Prefs.camSensitivity;
-    // Init GLFW temporarily to get monitor size, Window::Create will reinit safely
-    glfwInit();
-    int screenW = 1920, screenH = 1080;
-    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
-    if (primaryMonitor) {
-        const GLFWvidmode* vidmode = glfwGetVideoMode(primaryMonitor);
-        if (vidmode) { screenW = vidmode->width; screenH = vidmode->height; }
-    }
-    std::string windowTitle = g_PlayerMode ? "Game" : "VisualEngine v0.1";
-    VE::Window* window=VE::Window::Create(VE::WindowProps(windowTitle, screenW, screenH));
-    GLFWwindow* native=(GLFWwindow*)window->GetNativeWindow();
-
-    // Явно загружаем GLAD в main.cpp (контекст может быть потерян)
-    glfwMakeContextCurrent(native);
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "Failed to initialize GLAD in main.cpp" << std::endl;
-        return -1;
-    }
-
-    glfwMaximizeWindow(native);
-    glfwGetWindowSize(native, &screenW, &screenH);
-    glfwSetMouseButtonCallback(native,mouse_button_callback);
-    glfwSetWindowFocusCallback(native,[](GLFWwindow*,int focused){
-        if(focused){rightMouseDown=false;firstMouse=true;}
-    });
-    glfwSetDropCallback(native,[](GLFWwindow*,int count,const char** paths){
-        std::cout<<"[DEBUG] Drop callback fired! count="<<count<<"\n";
-        for(int i=0;i<count;i++){
-            std::cout<<"[DEBUG]   path="<<paths[i]<<"\n";
-            g_DroppedFiles.push_back(paths[i]);
-        }
-    });
-
-    IMGUI_CHECKVERSION();ImGui::CreateContext();
-    VE::InitWhiteTexture();
-    // в”Ђв”Ђ Load logo texture в”Ђв”Ђ
-    static GLuint g_LogoTex = 0;
-    if (g_LogoTex == 0 && fs::exists("logo.png")) {
-        g_LogoTex = VE::LoadTextureRaw("logo.png");
-        if (g_LogoTex) logInfo("Logo loaded");
-    }
-    ImGuiIO& io=ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(native,true);
-    // в”Ђв”Ђ РќР°С€ РєРѕР»Р»Р±СЌРє РјС‹С€Рё СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РџРћРЎР›Р• ImGui Рё Р·Р°РїРѕРјРёРЅР°РµРј РµРіРѕ РєРѕР»Р»Р±СЌРє вЂ”
-    //    РёРЅР°С‡Рµ ImGui_ImplGlfw_InitForOpenGL(...,true) С‚РёС…Рѕ РїРѕРґРјРµРЅСЏРµС‚
-    //    glfwSetCursorPosCallback СЃРІРѕРёРј, Рё g_RawMouseDX/DY (РґР»СЏ FPS-РєР°РјРµСЂС‹
-    //    РёР· Lua) РІРѕРѕР±С‰Рµ РїРµСЂРµСЃС‚Р°СЋС‚ РѕР±РЅРѕРІР»СЏС‚СЊСЃСЏ.
-    g_PrevCursorPosCallback = glfwSetCursorPosCallback(native, mouse_callback);
-    // Явно загружаем GLAD перед инициализацией ImGui
-    glfwMakeContextCurrent(native);
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "FATAL: Failed to initialize GLAD!" << std::endl;
-        return -1;
-    }
-    std::cout<< "GLAD loaded successfully" << std::endl;
-    // Явно загружаем GLAD перед инициализацией ImGui
-    glfwMakeContextCurrent(native);
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "FATAL: Failed to initialize GLAD!" << std::endl;
-        return -1;
-    }
-    std::cout<< "GLAD loaded successfully" << std::endl;
-    // Явно загружаем GLAD перед инициализацией ImGui
-    glfwMakeContextCurrent(native);
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "FATAL: Failed to initialize GLAD!" << std::endl;
-        return -1;
-    }
-    std::cout<< "GLAD loaded successfully" << std::endl;
-    ImGui_ImplOpenGL3_Init("#version 330");
-    VE::Console::Get().Init();
-
-    // Явно убеждаемся что GL контекст активен и GLAD загружен
-    glfwMakeContextCurrent(native);
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "FATAL: GLAD failed to load!" << std::endl;
-        return -1;
-    }
-    std::cout<< "GL version: " << GLVersion.major << "." << GLVersion.minor << std::endl;
-
-
-    // Проверка: GLAD должен быть загружен до ImGui_ImplOpenGL3_Init
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "GLAD failed to load in main.cpp!" << std::endl;
-        return -1;
-    }
-    std::cout<< "GLAD loaded: GL " << GLVersion.major << "." << GLVersion.minor << std::endl;
-
-
-    // Проверка: GLAD должен быть загружен до ImGui_ImplOpenGL3_Init
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "GLAD failed to load in main.cpp!" << std::endl;
-        return -1;
-    }
-    std::cout<< "GLAD loaded: GL " << GLVersion.major << "." << GLVersion.minor << std::endl;
-
-    if (ImGui::GetIO().BackendRendererUserData == nullptr) { std::cerr << "ImGui_ImplOpenGL3_Init failed!" << std::endl; return -1; }
-
-    // в”Ђв”Ђ РЁСЂРёС„С‚: РґРµС„РѕР»С‚РЅС‹Р№ С€СЂРёС„С‚ ImGui РїРѕРґРґРµСЂР¶РёРІР°РµС‚ С‚РѕР»СЊРєРѕ ASCII (0x20-0xFF),
-    //    РёР·-Р·Р° С‡РµРіРѕ РєРёСЂРёР»Р»РёС†Р° Рё РґР°Р¶Рµ РґР»РёРЅРЅРѕРµ С‚РёСЂРµ "вЂ”" СЂРёСЃРѕРІР°Р»РёСЃСЊ РєР°Рє "?".
-    //    Р“СЂСѓР·РёРј СЃРёСЃС‚РµРјРЅС‹Р№ Segoe UI (РµСЃС‚СЊ РЅР° Р»СЋР±РѕРј Windows) СЃ СЂР°СЃС€РёСЂРµРЅРЅС‹Рј
-    //    РґРёР°РїР°Р·РѕРЅРѕРј СЃРёРјРІРѕР»РѕРІ: Р»Р°С‚РёРЅРёС†Р° + РєРёСЂРёР»Р»РёС†Р° + С‚РёРїРѕРіСЂР°С„СЃРєРёРµ С‚РёСЂРµ/РєР°РІС‹С‡РєРё. в”Ђв”Ђ
-    {
-        ImFontGlyphRangesBuilder builder;
-        builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
-        builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
-        static const ImWchar extraChars[] = { 0x2010,0x2015, 0x2018,0x201F, 0x2026,0x2026, 0 }; // С‚РёСЂРµ, РєР°РІС‹С‡РєРё-С‘Р»РѕС‡РєРё, РјРЅРѕРіРѕС‚РѕС‡РёРµ
-        builder.AddRanges(extraChars);
-        static ImVector<ImWchar> ranges;
-        builder.BuildRanges(&ranges);
-
-        const char* fontCandidates[] = {
-            "C:\\Windows\\Fonts\\segoeui.ttf",
-            "C:\\Windows\\Fonts\\arial.ttf",
-        };
-        bool fontLoaded = false;
-        for (auto* path : fontCandidates) {
-            if (fs::exists(path)) {
-                io.Fonts->AddFontFromFileTTF(path, 17.0f, nullptr, ranges.Data);
-                fontLoaded = true;
-                break;
-            }
-        }
-        if (!fontLoaded) io.Fonts->AddFontDefault(); // РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё СЃРёСЃС‚РµРјР° СЃРѕРІСЃРµРј Р±РµР· СЃС‚Р°РЅРґР°СЂС‚РЅС‹С… С€СЂРёС„С‚РѕРІ
-        
-        // Font Awesome icons
-        {
-            static const ImWchar iconRanges[] = { 0xf000, 0xf8ff, 0 };
-            ImFontConfig iconCfg;
-            iconCfg.MergeMode = true;
-            iconCfg.GlyphOffset.y = 1.f;
-            const char* iconFont = "C:\\Users\\loboy\\Downloads\\VisualEngine\\assets\\fonts\\fa-solid-900.ttf";
-            if (fs::exists(iconFont))
-                io.Fonts->AddFontFromFileTTF(iconFont, 20.0f, &iconCfg, iconRanges);
-        }
-    }
-
-    VE::Shader shader(vertSrc,fragSrc);
-    VE::Shader skinnedShader(vertSkinnedSrc,fragSrc);
-VE::Shader depthShader(depthVertSrc,depthFragSrc);
-VE::Shader depthSkinnedShader(depthSkinnedVertSrc,depthFragSrc);
-static VE::ShadowMap shadowMapInstance;
-g_ShadowMap=&shadowMapInstance;
-g_DepthShader=&depthShader;
-g_DepthSkinnedShader=&depthSkinnedShader;
-glBindFramebuffer(GL_FRAMEBUFFER, shadowMapInstance.FBO);
-glClear(GL_DEPTH_BUFFER_BIT);
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    VE::Shader outlineShader(outlineVert,outlineFrag);
-    VE::Shader gridShader(gridVert,gridFrag);
-    VE::Shader gizmoShader(gizmoVert,gizmoFrag);
-    VE::Shader skyboxShader(skyboxVert,skyboxFrag);
-    VE::Grid grid(20);
-
-    std::string skyboxBase=(fs::current_path()/"assets"/"skybox"/"").string();
-    VE::Skybox skybox({skyboxBase+"right.jpg",skyboxBase+"left.jpg",skyboxBase+"top.jpg",skyboxBase+"bottom.jpg",skyboxBase+"front.jpg",skyboxBase+"back.jpg"});
-
-    unsigned int cubeVAO=setupCubeVAO();
-    VE::Mesh sphere=VE::CreateSphere(),cylinder=VE::CreateCylinder(),pyramid=VE::CreatePyramid(),capsule=VE::CreateCapsule(),plane=VE::CreatePlane();
-    int arrowCnt=0;unsigned int arrowVAO=buildArrowVAO(arrowCnt);
-
-    unsigned int sceneFBO,sceneTex,sceneRBO;
-    glGenFramebuffers(1,&sceneFBO);glBindFramebuffer(GL_FRAMEBUFFER,sceneFBO);
-    glGenTextures(1,&sceneTex);glBindTexture(GL_TEXTURE_2D,sceneTex);
-    glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,3840,2160,0,GL_RGB,GL_UNSIGNED_BYTE,nullptr);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,sceneTex,0);
-    glGenRenderbuffers(1,&sceneRBO);glBindRenderbuffer(GL_RENDERBUFFER,sceneRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,3840,2160);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,sceneRBO);
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-
-    unsigned int gameFBO,gameTex,gameRBO;
-    glGenFramebuffers(1,&gameFBO);glBindFramebuffer(GL_FRAMEBUFFER,gameFBO);
-    glGenTextures(1,&gameTex);glBindTexture(GL_TEXTURE_2D,gameTex);
-    glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,3840,2160,0,GL_RGB,GL_UNSIGNED_BYTE,nullptr);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,gameTex,0);
-    glGenRenderbuffers(1,&gameRBO);glBindRenderbuffer(GL_RENDERBUFFER,gameRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,3840,2160);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,gameRBO);
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-
-    // в”Ђв”Ђ MSAA: СЂРµРЅРґРµСЂРёРј РІ РјСѓР»СЊС‚РёСЃСЌРјРїР»-Р±СѓС„РµСЂ, РїРѕС‚РѕРј resolve-Р±Р»РёС‚РѕРј РїРµСЂРµРЅРѕСЃРёРј РІ СѓР¶Рµ
-    //    СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёРµ sceneTex/gameTex вЂ” РёС… СЃР°РјСѓ С‚РµРєСЃС‚СѓСЂСѓ Рё ImGui::Image С‚СЂРѕРіР°С‚СЊ РЅРµ РїСЂРёС€Р»РѕСЃСЊ в”Ђв”Ђ
-    const int MSAA_SAMPLES = 4;
-    unsigned int sceneMSFBO,sceneMSColorRBO,sceneMSDepthRBO;
-    glGenFramebuffers(1,&sceneMSFBO);glBindFramebuffer(GL_FRAMEBUFFER,sceneMSFBO);
-    glGenRenderbuffers(1,&sceneMSColorRBO);glBindRenderbuffer(GL_RENDERBUFFER,sceneMSColorRBO);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_RGBA16F,3840,2160);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,sceneMSColorRBO);
-    glGenRenderbuffers(1,&sceneMSDepthRBO);glBindRenderbuffer(GL_RENDERBUFFER,sceneMSDepthRBO);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_DEPTH24_STENCIL8,3840,2160);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,sceneMSDepthRBO);
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-
-    unsigned int gameMSFBO,gameMSColorRBO,gameMSDepthRBO;
-    glGenFramebuffers(1,&gameMSFBO);glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);
-    glGenRenderbuffers(1,&gameMSColorRBO);glBindRenderbuffer(GL_RENDERBUFFER,gameMSColorRBO);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_RGBA16F,3840,2160);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,gameMSColorRBO);
-    glGenRenderbuffers(1,&gameMSDepthRBO);glBindRenderbuffer(GL_RENDERBUFFER,gameMSDepthRBO);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER,MSAA_SAMPLES,GL_DEPTH24_STENCIL8,3840,2160);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_RENDERBUFFER,gameMSDepthRBO);
-    glBindFramebuffer(GL_FRAMEBUFFER,0);
-    glEnable(GL_MULTISAMPLE);
-
-    // в”Ђв”Ђ Bloom: HDR-СЂРµР·РѕР»РІ (float, Р±РµР· tonemap) + Р±СѓС„РµСЂС‹ РїРѕРґ bright-pass/blur в”Ђв”Ђ
-    auto makeHDRFBO = [](unsigned int& fbo, unsigned int& tex, int w, int h){
-        glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-        glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA16F,w,h,0,GL_RGBA,GL_FLOAT,nullptr);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
-        glBindFramebuffer(GL_FRAMEBUFFER,0);
-    };
-    unsigned int sceneHDRFBO,sceneHDRTex; makeHDRFBO(sceneHDRFBO,sceneHDRTex,3840,2160);
-    unsigned int gameHDRFBO,gameHDRTex;   makeHDRFBO(gameHDRFBO,gameHDRTex,3840,2160);
-    // bright-pass/blur вЂ” РїРѕР»РѕРІРёРЅРЅРѕРµ СЂР°Р·СЂРµС€РµРЅРёРµ, СЌС‚РѕРіРѕ РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґР»СЏ РјСЏРіРєРѕРіРѕ СЃРІРµС‡РµРЅРёСЏ Рё Р·Р°РјРµС‚РЅРѕ Р±С‹СЃС‚СЂРµРµ
-    unsigned int brightFBO,brightTex; makeHDRFBO(brightFBO,brightTex,1920,1080);
-    unsigned int pingpongFBO[2],pingpongTex[2];
-    for(int i=0;i<2;i++) makeHDRFBO(pingpongFBO[i],pingpongTex[i],1920,1080);
-
-    // fullscreen-quad РґР»СЏ РІСЃРµС… РїРѕСЃС‚-РїСЂРѕС†РµСЃСЃ РїСЂРѕС…РѕРґРѕРІ
-    unsigned int quadVAO,quadVBO;
-    {
-        float qv[] = { -1,1,0,1,  -1,-1,0,0,  1,-1,1,0,   -1,1,0,1,  1,-1,1,0,  1,1,1,1 };
-        glGenVertexArrays(1,&quadVAO); glGenBuffers(1,&quadVBO);
-        glBindVertexArray(quadVAO); glBindBuffer(GL_ARRAY_BUFFER,quadVBO);
-        glBufferData(GL_ARRAY_BUFFER,sizeof(qv),qv,GL_STATIC_DRAW);
-        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)0); glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)(2*sizeof(float))); glEnableVertexAttribArray(1);
-        glBindVertexArray(0);
-    }
-
-    VE::Shader bloomBrightShader(postVertSrc,brightPassFragSrc);
-    VE::Shader bloomBlurShader(postVertSrc,blurFragSrc);
-    VE::Shader bloomCompositeShader(postVertSrc,compositeFragSrc);
-
-    float g_BloomThreshold=1.5f, g_BloomStrength=0.25f, g_Exposure=0.92f;
-    bool  g_BloomEnabled=true;
-
-    // Р РµР·РѕР»РІРёС‚ HDR-СЃС†РµРЅСѓ (hdrTex) РІ bright-pass -> СЂР°Р·РјС‹С‚РёРµ -> РєРѕРјРїРѕР·РёС‚+tonemap,
-    // С„РёРЅР°Р»СЊРЅС‹Р№ LDR-СЂРµР·СѓР»СЊС‚Р°С‚ РїРёС€РµС‚ РІ outputFBO (СЌС‚Рѕ sceneFBO/gameFBO вЂ” РёС… СЃР°РјР° С‚РµРєСЃС‚СѓСЂР°
-    // РґР»СЏ ImGui::Image РЅРµ РјРµРЅСЏРµС‚СЃСЏ, РјРµРЅСЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ С‚Рѕ, С‡С‚Рѕ РІ РЅРµС‘ СЂРёСЃСѓРµС‚СЃСЏ).
-    auto ApplyBloomAndTonemap = [&](unsigned int hdrTex, unsigned int outputFBO, int w, int h){
-        if (hdrTex == 0 || w <= 0 || h <= 0) {
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-            glClearColor(0.08f, 0.10f, 0.15f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            return;
-        }
-
-        if (g_PlayerMode || outputFBO == 0) {
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-            glDisable(GL_DEPTH_TEST);
-            glDisable(GL_BLEND);
-            bloomCompositeShader.Use();
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, hdrTex);
-            glUniform1i(glGetUniformLocation(bloomCompositeShader.ID, "uScene"), 0);
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0);
-            glUniform1i(glGetUniformLocation(bloomCompositeShader.ID, "uBloom"), 1);
-            glUniform1f(glGetUniformLocation(bloomCompositeShader.ID, "uBloomStrength"), 0.0f);
-            glUniform1f(glGetUniformLocation(bloomCompositeShader.ID, "uExposure"), 1.0f);
-            glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES, 0, 6);
-            glEnable(GL_DEPTH_TEST);
-            return;
-        }
-
-        glBindFramebuffer(GL_FRAMEBUFFER, outputFBO);
-        GLenum fbStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (fbStatus != GL_FRAMEBUFFER_COMPLETE) {
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-            glClearColor(0.08f, 0.10f, 0.15f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            return;
-        }
-
-        int bw=w/4, bh=h/4; if(bw<1)bw=1; if(bh<1)bh=1; // С‡РµС‚РІРµСЂС‚СЊ СЂР°Р·СЂРµС€РµРЅРёСЏ вЂ” Р·Р°РјРµС‚РЅРѕ РґРµС€РµРІР»Рµ, РґР»СЏ bloom СЌС‚РѕРіРѕ РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ
-
-        // РџРѕР»РЅРѕСЌРєСЂР°РЅРЅС‹Рµ quad-РїСЂРѕС…РѕРґС‹ вЂ” 2D, Р±РµР· РіР»СѓР±РёРЅС‹/Р±Р»РµРЅРґРёРЅРіР°. Р•СЃР»Рё РѕСЃС‚Р°РІРёС‚СЊ
-        // GL_DEPTH_TEST РІРєР»СЋС‡РµРЅРЅС‹Рј (РѕРЅ РІРєР»СЋС‡РµРЅ РїРѕСЃР»Рµ 3D-СЂРµРЅРґРµСЂР° СЃС†РµРЅС‹), quad РїСЂРѕРІР°Р»РёРІР°РµС‚
-        // С‚РµСЃС‚ РіР»СѓР±РёРЅС‹ РїСЂРѕС‚РёРІ РЅРµРѕС‡РёС‰РµРЅРЅРѕРіРѕ Р±СѓС„РµСЂР° РіР»СѓР±РёРЅС‹ Рё РїСЂРѕСЃС‚Рѕ РЅРµ СЂРёСЃСѓРµС‚СЃСЏ вЂ” С‡С‘СЂРЅС‹Р№ СЌРєСЂР°РЅ.
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-
-        // 1) bright-pass РІ РїРѕР»РѕРІРёРЅРЅРѕРј СЂР°Р·СЂРµС€РµРЅРёРё
-        glBindFramebuffer(GL_FRAMEBUFFER,brightFBO); glViewport(0,0,bw,bh);
-        bloomBrightShader.Use();
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrTex);
-        glUniform1i(glGetUniformLocation(bloomBrightShader.ID,"uScene"),0);
-        glUniform1f(glGetUniformLocation(bloomBrightShader.ID,"uThreshold"),g_BloomThreshold);
-        glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
-
-        // 2) РіР°СѓСЃСЃРѕРІРѕ СЂР°Р·РјС‹С‚РёРµ РїРёРЅРі-РїРѕРЅРіРѕРј (5 РїСЂРѕС…РѕРґРѕРІ С‚СѓРґР°-РѕР±СЂР°С‚РЅРѕ = РјСЏРіРєРѕРµ С€РёСЂРѕРєРѕРµ СЃРІРµС‡РµРЅРёРµ)
-        bool horizontal=true; unsigned int srcTex=brightTex;
-        bloomBlurShader.Use();
-        glUniform2f(glGetUniformLocation(bloomBlurShader.ID,"uTexelSize"),1.0f/bw,1.0f/bh);
-        for(int i=0;i<4;i++){
-            glBindFramebuffer(GL_FRAMEBUFFER,pingpongFBO[horizontal?0:1]); glViewport(0,0,bw,bh);
-            glUniform1i(glGetUniformLocation(bloomBlurShader.ID,"uHorizontal"),horizontal);
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,srcTex);
-            glUniform1i(glGetUniformLocation(bloomBlurShader.ID,"uImage"),0);
-            glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
-            srcTex=pingpongTex[horizontal?0:1];
-            horizontal=!horizontal;
-        }
-
-        // 3) РєРѕРјРїРѕР·РёС‚: HDR-СЃС†РµРЅР° + СЂР°Р·РјС‹С‚С‹Р№ bloom -> ACES tonemap -> РёС‚РѕРіРѕРІС‹Р№ LDR РІ outputFBO
-        glBindFramebuffer(GL_FRAMEBUFFER,outputFBO); glViewport(0,0,w,h);
-        bloomCompositeShader.Use();
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,hdrTex);
-        glUniform1i(glGetUniformLocation(bloomCompositeShader.ID,"uScene"),0);
-        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D,srcTex);
-        glUniform1i(glGetUniformLocation(bloomCompositeShader.ID,"uBloom"),1);
-        glUniform1f(glGetUniformLocation(bloomCompositeShader.ID,"uBloomStrength"),g_BloomEnabled?g_BloomStrength:0.f);
-        glUniform1f(glGetUniformLocation(bloomCompositeShader.ID,"uExposure"),g_Exposure);
-        glBindVertexArray(quadVAO); glDrawArrays(GL_TRIANGLES,0,6);
-        glActiveTexture(GL_TEXTURE0);
-        glEnable(GL_DEPTH_TEST); // РѕР·РІСЂР°С‰Р°РµРј СЃРѕСЃС‚РѕСЏРЅРёРµ РґР»СЏ СЃР»РµРґСѓСЋС‰РµРіРѕ 3D-СЂРµРЅРґРµСЂР°
-    };
-
-    std::vector<SceneObject> objects;
-    g_LuaObjectsPtr = &objects; // РґР»СЏ Animation.* API РёР· Lua
-    std::vector<LightObject> lights;
-    std::vector<CameraObject> sceneCameras;
-    g_LuaLightsPtr  = &lights;      // РґР»СЏ SaveScene РёР· Lua
-    g_LuaCamerasPtr = &sceneCameras; // РґР»СЏ Scene.SetCamera РёР· Lua
-    int sel=-1,selLight=-1,selCamera=-1;
-static bool gameCameraInitialized = false;
-    SelectionType selType=SelectionType::None; selUI=-1; selSprite2D=-1;
-
-    {SceneObject o;o.name="Cube";o.pos=glm::vec3(0,.5f,0);o.type=PrimitiveType::Cube;o.color=glm::vec3(1.f,1.f,1.f);
-     o.ecsID=scene.CreateEntity(o.name);scene.GetTransform(o.ecsID).Position=o.pos;
-     scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);objects.push_back(o);}
-    {LightObject l;l.name="PointLight_1";l.pos=glm::vec3(5,8,4);l.color=glm::vec3(1,1,1);l.intensity=1.f;l.range=30.f;
-     l.ecsID=scene.CreateEntity(l.name);scene.registry.AddComponent<VE::LightComponent>(l.ecsID,l.color,l.intensity);lights.push_back(l);}
-    {CameraObject cam;cam.name="GameCamera_1";cam.pos=glm::vec3(0,2,5);
-     cam.ecsID=scene.CreateEntity(cam.name);scene.registry.AddComponent<VE::CameraComponent>(cam.ecsID,true);sceneCameras.push_back(cam);}
-    sel=0;selType=SelectionType::Object;
-    logInfo("ECS initialized вЂ” "+std::to_string(scene.EntityCount())+" entities");
-
-    VE::ScriptEditor scriptEditor;
-    std::string projectRoot = g_PlayerMode
-        ? fs::current_path().string()
-        : (!g_OverrideProjectRoot.empty() ? g_OverrideProjectRoot : (fs::current_path()/"project").string());
-    std::string currentScenePath="";
-    bool showSkybox=true,showGrid=true,showGizmos=true;
-    int g_SideTab=0; // 0=Hierarchy, 1=Project, 2=Scripts
-    static char hierSearch[128]={};
-    std::string assetCurrentPath=projectRoot+"\\Assets",assetSelected="";
-    static char assetSearch[128]={};
-
-    // в”Ђв”Ђ РЎС‚Р°СЂС‚РѕРІР°СЏ СЃС‚СЂСѓРєС‚СѓСЂР° РїСЂРѕРµРєС‚Р° (РєР°Рє Unity: СЃСЂР°Р·Сѓ РіРѕС‚РѕРІС‹Рµ РїР°РїРєРё) в”Ђв”Ђ
-    {
-        const char* starterFolders[] = {
-            "Assets\\Scenes",
-            "Assets\\Scripts",
-            "Assets\\Materials",
-            "Assets\\Models",
-            "Assets\\Textures",
-            "Assets\\Audio",
-            "Saves"
-        };
-        for (auto* f : starterFolders) {
-            try { fs::create_directories(projectRoot+"\\"+f); } catch(...) {}
-        }
-    }
-
-    logInfo("Engine initialized вЂ” VisualEngine v0.1");
-    VE2D::Init();
-    logInfo("Scene loaded: Untitled");
-        g_SkipPropagate=true;
-
-    VE::AudioEngine::Get().Init();
-    VE::SaveSystem::Get().SetSaveDir(projectRoot + "\\Saves");
-
-    // в”Ђв”Ђ SceneManager: СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РєРѕР»Р»Р±СЌРє Р·Р°РіСЂСѓР·РєРё СЃС†РµРЅС‹ в”Ђв”Ђ
-    VE::SceneManager::Get().SetLoadCallback([&](const std::string& path){
-        // Р•СЃР»Рё РёРґС‘С‚ Play вЂ” СЃС‚РѕРїР°РµРј
-        if(isPlaying){
-            isPlaying=false; isPaused=false;
-    glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    g_FpsLock=false;
-            if(g_MouseCaptured){ g_MouseCaptured=false; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL); }
-            VE::Physics::Get().ClearAllBodies();
-            for(auto& obj:objects){ obj.luaInstances.clear(); }
-        }
-        objects.clear(); lights.clear(); sceneCameras.clear();
-        sel=-1; selLight=-1; selCamera=-1; selType=SelectionType::None; selUI=-1; selSprite2D=-1;
-        LoadScene(path,objects,lights,sceneCameras,sel,selType);
-        VE::UndoSystem::Get().Clear(); // РЅРѕРІР°СЏ СЃС†РµРЅР° вЂ” СЃС‚Р°СЂР°СЏ РёСЃС‚РѕСЂРёСЏ РѕС‚РјРµРЅС‹ Р±РѕР»СЊС€Рµ РЅРµ РІР°Р»РёРґРЅР°
-        currentScenePath=path;
-        // РџРµСЂРµСЃРѕР·РґР°С‘Рј ECS СЃСѓС‰РЅРѕСЃС‚Рё
-        for(auto& o:objects){
-            o.ecsID=scene.CreateEntity(o.name);
-            scene.GetTransform(o.ecsID).Position=o.pos;
-            scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
-        }
-        logInfo("Scene loaded: "+path);
-        g_SkipPropagate=true;
-        // Player mode: РєР°Рє С‚РѕР»СЊРєРѕ СЃС†РµРЅР° Р·Р°РіСЂСѓР·РёР»Р°СЃСЊ вЂ” СЃС‚Р°РІРёРј С„Р»Р°Рі РЅР° Р°РІС‚РѕР·Р°РїСѓСЃРє Play
-        // (СЃР°РјСѓ StartPlay() РІС‹Р·РІР°С‚СЊ Р·РґРµСЃСЊ РЅРµР»СЊР·СЏ вЂ” РѕРЅР° РѕР±СЉСЏРІР»СЏРµС‚СЃСЏ РЅРёР¶Рµ РїРѕ РєРѕРґСѓ)
-        if (g_PlayerMode) g_PlayerAutoPlayPending = true;
-    });
-
-    // в”Ђв”Ђ SceneManager: СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РєРѕР»Р»Р±СЌРє СЃРѕС…СЂР°РЅРµРЅРёСЏ СЃС†РµРЅС‹ (РґР»СЏ SceneManager.SaveScene / SaveScene РёР· Lua) в”Ђв”Ђ
-    VE::SceneManager::Get().SetSaveCallback([&](const std::string& path){
-        SaveScene(path, objects, lights, sceneCameras);
-        currentScenePath = path;
-        logInfo("Scene saved: "+path);
-    });
-
-    glEnable(GL_DEPTH_TEST);glEnable(GL_STENCIL_TEST);
-
-    // в”Ђв”Ђ Р—Р°РїСѓСЃРє Play: СЃРѕР·РґР°С‘С‚ Lua-РёРЅСЃС‚Р°РЅСЃС‹ РѕР±СЉРµРєС‚РѕРІ Рё РІС‹Р·С‹РІР°РµС‚ onStart() в”Ђв”Ђ
-    // Р’С‹РЅРµСЃРµРЅРѕ РІ РѕС‚РґРµР»СЊРЅСѓСЋ С„СѓРЅРєС†РёСЋ, С‡С‚РѕР±С‹ РµС‘ РјРѕРі РІС‹Р·РІР°С‚СЊ Рё Play-РєРЅРѕРїРєР°
-    // СЂРµРґР°РєС‚РѕСЂР°, Рё Р°РІС‚РѕР·Р°РїСѓСЃРє РІ player mode (РєРѕРіРґР° РґРІРёР¶РѕРє СЃРѕР±СЂР°РЅ РєР°Рє РёРіСЂР°).
-    auto StartPlay = [&](){
-    gameCameraInitialized = false;
-        isPlaying=true; isPaused=false;
-        g_WantGameTab=true;
-        savedTransforms.clear();
-        for(auto& obj:objects) savedTransforms.push_back({obj.pos,obj.rot,obj.scale});
-        for(auto& obj:objects){
-            for(auto& scriptPath : obj.scriptPaths){
-            if(scriptPath.empty()) continue;
-            auto luaInst=std::make_shared<VE::LuaEngine>();
-            luaInst->scriptPath = scriptPath;
-            luaInst->setWindow(native);
-            VE::AudioEngine::Get().RegisterLua(luaInst->L);
-            VE::SceneManager::Get().RegisterLua(luaInst->L);
-            VE::HUD::Get().RegisterLua(luaInst->L);
-            VE::SaveSystem::Get().RegisterLua(luaInst->L);
-
-            // в”Ђв”Ђ Physics API: СѓРїСЂР°РІР»РµРЅРёРµ С„РёР·РёРєРѕР№ РЎР’РћР•Р“Рћ РѕР±СЉРµРєС‚Р° в”Ђв”Ђ
-            // Physics.AddForce(x,y,z) / AddImpulse(x,y,z) / SetVelocity(x,y,z)
-            // Physics.GetVelocity() -> x,y,z / Physics.Stop()
-            {
-                lua_State* LL = luaInst->L;
-                VE::EntityID selfID = obj.ecsID;
-                lua_newtable(LL);
-
-                auto pushSelfFn = [&](const char* name, lua_CFunction fn){
-                    lua_pushstring(LL, name);
-                    lua_pushinteger(LL, (lua_Integer)selfID);
-                    lua_pushcclosure(LL, fn, 1);
-                    lua_settable(LL, -3);
-                };
-
-                pushSelfFn("AddForce", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    float x=(float)luaL_optnumber(L,1,0), y=(float)luaL_optnumber(L,2,0), z=(float)luaL_optnumber(L,3,0);
-                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id))
-                        scene.registry.GetComponent<VE::RigidbodyComponent>(id).AddForce(glm::vec3(x,y,z));
-                    return 0;
-                });
-                pushSelfFn("AddImpulse", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    float x=(float)luaL_optnumber(L,1,0), y=(float)luaL_optnumber(L,2,0), z=(float)luaL_optnumber(L,3,0);
-                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id))
-                        scene.registry.GetComponent<VE::RigidbodyComponent>(id).AddImpulse(glm::vec3(x,y,z));
-                    return 0;
-                });
-                pushSelfFn("SetVelocity", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    float x=(float)luaL_optnumber(L,1,0), y=(float)luaL_optnumber(L,2,0), z=(float)luaL_optnumber(L,3,0);
-                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id))
-                        scene.registry.GetComponent<VE::RigidbodyComponent>(id).Velocity = glm::vec3(x,y,z);
-                    return 0;
-                });
-                pushSelfFn("GetVelocity", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    glm::vec3 v(0.f);
-                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id))
-                        v = scene.registry.GetComponent<VE::RigidbodyComponent>(id).Velocity;
-                    lua_pushnumber(L,v.x); lua_pushnumber(L,v.y); lua_pushnumber(L,v.z);
-                    return 3;
-                });
-                pushSelfFn("Stop", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id))
-                        scene.registry.GetComponent<VE::RigidbodyComponent>(id).Stop();
-                    return 0;
-                });
-
-                // в”Ђв”Ђ Physics.AddRigidbody(mass?, useGravity?) вЂ” РІРєР»СЋС‡РёС‚СЊ С„РёР·РёРєСѓ РґР»СЏ РЎР’РћР•Р“Рћ РѕР±СЉРµРєС‚Р°.
-                //    Р•СЃР»Рё Сѓ РѕР±СЉРµРєС‚Р° РµС‰С‘ РЅРµС‚ РєРѕР»Р»Р°Р№РґРµСЂР° вЂ” РґРѕР±Р°РІР»СЏРµС‚ Box-РєРѕР»Р»Р°Р№РґРµСЂ РїРѕ СЂР°Р·РјРµСЂСѓ РѕР±СЉРµРєС‚Р°
-                //    (РёРЅР°С‡Рµ С‚РµР»Рѕ Р±СѓРґРµС‚ РїР°РґР°С‚СЊ, РЅРѕ РЅРё СЃ С‡РµРј РЅРµ СЃС‚Р°Р»РєРёРІР°С‚СЊСЃСЏ вЂ” Physics.Step С‚СЂРµР±СѓРµС‚
-                //    Rigidbody+Collider+Transform РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ, СЃРј. Physics.h::SyncToBullet). в”Ђв”Ђ
-                pushSelfFn("AddRigidbody", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    float mass = (float)luaL_optnumber(L,1,1.0);
-                    bool useGravity = lua_isboolean(L,2) ? (lua_toboolean(L,2)!=0) : true;
-
-                    if(scene.registry.HasComponent<VE::RigidbodyComponent>(id)){
-                        auto& rb = scene.registry.GetComponent<VE::RigidbodyComponent>(id);
-                        rb.Mass = mass; rb.UseGravity = useGravity;
-                    } else {
-                        auto& rb = scene.registry.AddComponent<VE::RigidbodyComponent>(id);
-                        rb.Mass = mass; rb.UseGravity = useGravity;
-                    }
-
-                    extern std::vector<SceneObject>* g_LuaObjectsPtr;
-                    glm::vec3 half(0.5f,0.5f,0.5f);
-                    if(g_LuaObjectsPtr) for(auto& o : *g_LuaObjectsPtr) if(o.ecsID==id){ half = o.scale*0.5f; o.hasRigidBody=true; break; }
-
-                    if(!scene.registry.HasComponent<VE::ColliderComponent>(id))
-                        scene.registry.AddComponent<VE::ColliderComponent>(id) = VE::ColliderComponent::Box(half);
-
-                    return 0;
-                });
-
-                // в”Ђв”Ђ Physics.AddCollider(shape, a, b, c, isTrigger?) вЂ” РґРѕР±Р°РІРёС‚СЊ/Р·Р°РјРµРЅРёС‚СЊ С„РѕСЂРјСѓ РєРѕР»Р»РёР·РёР№.
-                //    shape="box":     a,b,c = half-size РїРѕ X,Y,Z (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ 0.5 РєР°Р¶РґС‹Р№)
-                //    shape="sphere":  a = radius
-                //    shape="capsule": a = radius, b = height
-                //    isTrigger вЂ” РЅРµРѕР±СЏР·Р°С‚РµР»СЊРЅС‹Р№ bool, РїРѕСЃР»РµРґРЅРёРј Р°СЂРіСѓРјРµРЅС‚РѕРј (РѕР±СЉРµРєС‚С‹ РїСЂРѕС…РѕРґСЏС‚
-                //    СЃРєРІРѕР·СЊ, РЅРѕ СЃРѕР±С‹С‚РёРµ СЃС‚РѕР»РєРЅРѕРІРµРЅРёСЏ РІСЃС‘ СЂР°РІРЅРѕ РїСЂРѕРёСЃС…РѕРґРёС‚). в”Ђв”Ђ
-                pushSelfFn("AddCollider", [](lua_State* L)->int{
-                    VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    std::string shape = luaL_optstring(L,1,"box");
-                    bool isTrigger = lua_isboolean(L,5) ? (lua_toboolean(L,5)!=0) : false;
-
-                    VE::ColliderComponent col;
-                    if(shape=="sphere"){
-                        col = VE::ColliderComponent::Sphere((float)luaL_optnumber(L,2,0.5), isTrigger);
-                    } else if(shape=="capsule"){
-                        col = VE::ColliderComponent::Capsule((float)luaL_optnumber(L,2,0.5), (float)luaL_optnumber(L,3,1.0));
-                        col.IsTrigger = isTrigger;
-                    } else {
-                        glm::vec3 half((float)luaL_optnumber(L,2,0.5),(float)luaL_optnumber(L,3,0.5),(float)luaL_optnumber(L,4,0.5));
-                        col = VE::ColliderComponent::Box(half, isTrigger);
-                    }
-
-                    if(scene.registry.HasComponent<VE::ColliderComponent>(id))
-                        scene.registry.GetComponent<VE::ColliderComponent>(id) = col;
-                    else
-                        scene.registry.AddComponent<VE::ColliderComponent>(id) = col;
-                    return 0;
-                });
-
-                // в”Ђв”Ђ Physics.Raycast(ox,oy,oz, dx,dy,dz, maxDist) вЂ” РґР»СЏ РІС‹СЃС‚СЂРµР»РѕРІ, РїСЂРѕРІРµСЂРєРё Р·РµРјР»Рё, РєР»РёРєР° РїРѕ РѕР±СЉРµРєС‚Сѓ.
-                //    Р’РѕР·РІСЂР°С‰Р°РµС‚: hit(bool), entity(int|nil), hitX,hitY,hitZ, normalX,normalY,normalZ, distance в”Ђв”Ђ
-                lua_pushstring(LL, "Raycast");
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    glm::vec3 origin((float)luaL_optnumber(L,1,0), (float)luaL_optnumber(L,2,0), (float)luaL_optnumber(L,3,0));
-                    glm::vec3 dir((float)luaL_optnumber(L,4,0), (float)luaL_optnumber(L,5,0), (float)luaL_optnumber(L,6,0));
-                    float maxDist = (float)luaL_optnumber(L,7,1000.0);
-                    auto hit = VE::Physics::Get().Raycast(origin, dir, maxDist);
-                    lua_pushboolean(L, hit.hit);
-                    if (hit.hit) lua_pushinteger(L, (lua_Integer)hit.entity); else lua_pushnil(L);
-                    lua_pushnumber(L, hit.point.x);  lua_pushnumber(L, hit.point.y);  lua_pushnumber(L, hit.point.z);
-                    lua_pushnumber(L, hit.normal.x); lua_pushnumber(L, hit.normal.y); lua_pushnumber(L, hit.normal.z);
-                    lua_pushnumber(L, hit.distance);
-                    return 9;
-                }, 0);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Physics.RaycastAll(ox,oy,oz, dx,dy,dz, maxDist?) вЂ” Р’РЎР• РїРµСЂРµСЃРµС‡РµРЅРёСЏ РІРґРѕР»СЊ Р»СѓС‡Р°
-                //    (РЅРµ С‚РѕР»СЊРєРѕ Р±Р»РёР¶Р°Р№С€РµРµ, РєР°Рє Raycast) вЂ” РґР»СЏ РґСЂРѕР±РѕРІРёРєР°/Р»СѓС‡Р° СЃРєРІРѕР·СЊ СЃС‚РµРєР»Рѕ Рё С‚.Рї.
-                //    Р’РѕР·РІСЂР°С‰Р°РµС‚ Lua-РјР°СЃСЃРёРІ С‚Р°Р±Р»РёС†: { {entity=.., x=.., y=.., z=.., nx=.., ny=.., nz=.., distance=..}, ... }
-                //    РѕС‚СЃРѕСЂС‚РёСЂРѕРІР°РЅРЅС‹Р№ РїРѕ СЂР°СЃСЃС‚РѕСЏРЅРёСЋ (Р±Р»РёР¶Р°Р№С€РёР№ РїРµСЂРІС‹Р№). в”Ђв”Ђ
-                lua_pushstring(LL, "RaycastAll");
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    glm::vec3 origin((float)luaL_optnumber(L,1,0), (float)luaL_optnumber(L,2,0), (float)luaL_optnumber(L,3,0));
-                    glm::vec3 dir((float)luaL_optnumber(L,4,0), (float)luaL_optnumber(L,5,0), (float)luaL_optnumber(L,6,0));
-                    float maxDist = (float)luaL_optnumber(L,7,1000.0);
-                    auto hits = VE::Physics::Get().RaycastAll(origin, dir, maxDist);
-
-                    lua_newtable(L);
-                    for(size_t i=0;i<hits.size();i++){
-                        lua_newtable(L);
-                        lua_pushinteger(L,(lua_Integer)hits[i].entity); lua_setfield(L,-2,"entity");
-                        lua_pushnumber(L,hits[i].point.x);   lua_setfield(L,-2,"x");
-                        lua_pushnumber(L,hits[i].point.y);   lua_setfield(L,-2,"y");
-                        lua_pushnumber(L,hits[i].point.z);   lua_setfield(L,-2,"z");
-                        lua_pushnumber(L,hits[i].normal.x);  lua_setfield(L,-2,"nx");
-                        lua_pushnumber(L,hits[i].normal.y);  lua_setfield(L,-2,"ny");
-                        lua_pushnumber(L,hits[i].normal.z);  lua_setfield(L,-2,"nz");
-                        lua_pushnumber(L,hits[i].distance);  lua_setfield(L,-2,"distance");
-                        lua_rawseti(L,-2,(int)(i+1)); // Lua-РјР°СЃСЃРёРІС‹ СЃ 1
-                    }
-                    return 1;
-                }, 0);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Physics.CheckCollision(a, b) вЂ” СЃРѕРїСЂРёРєР°СЃР°СЋС‚СЃСЏ Р»Рё Entity a Рё b РїСЂСЏРјРѕ СЃРµР№С‡Р°СЃ.
-                //    Physics.CheckCollision(otherID) вЂ” РєРѕСЂРѕС‚РєР°СЏ С„РѕСЂРјР°: РїСЂРѕРІРµСЂРёС‚СЊ РЎР’РћР™ РѕР±СЉРµРєС‚ Рё otherID. в”Ђв”Ђ
-                pushSelfFn("CheckCollision", [](lua_State* L)->int{
-                    VE::EntityID selfId=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
-                    VE::EntityID a, b;
-                    if(lua_gettop(L) >= 2){
-                        a=(VE::EntityID)luaL_optinteger(L,1,0);
-                        b=(VE::EntityID)luaL_optinteger(L,2,0);
-                    } else {
-                        a=selfId;
-                        b=(VE::EntityID)luaL_optinteger(L,1,0);
-                    }
-                    lua_pushboolean(L, VE::Physics::Get().CheckCollision(a,b));
-                    return 1;
-                });
-
-                lua_setglobal(LL, "Physics");
-            }
-
-            // в”Ђв”Ђ Scene API: РЅР°Р№С‚Рё РґСЂСѓРіРѕР№ РѕР±СЉРµРєС‚ РїРѕ РёРјРµРЅРё Рё РїСЂРѕС‡РёС‚Р°С‚СЊ/Р·Р°РґР°С‚СЊ РїРѕР·РёС†РёСЋ в”Ђв”Ђ
-            // Scene.GetPosition("Name") -> x,y,z (РЅРёС‡РµРіРѕ, РµСЃР»Рё РЅРµ РЅР°Р№РґРµРЅ)
-            // Scene.SetPosition("Name", x,y,z)
-            // Scene.Exists("Name") -> bool
-            {
-                lua_State* LL = luaInst->L;
-                lua_newtable(LL);
-
-                lua_pushstring(LL, "GetPosition");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* name=luaL_checkstring(L,1);
-                    for(auto& o:*objs){
-                        if(o.name==name){
-                            lua_pushnumber(L,o.pos.x); lua_pushnumber(L,o.pos.y); lua_pushnumber(L,o.pos.z);
-                            return 3;
-                        }
-                    }
-                    return 0;
-                }, 1);
-                lua_settable(LL, -3);
-
-                lua_pushstring(LL, "SetPosition");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* name=luaL_checkstring(L,1);
-                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
-                    for(auto& o:*objs){
-                        if(o.name==name){ o.pos=glm::vec3(x,y,z); return 0; }
-                    }
-                    return 0;
-                }, 1);
-                lua_settable(LL, -3);
-
-                lua_pushstring(LL, "Exists");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* name=luaL_checkstring(L,1);
-                    for(auto& o:*objs) if(o.name==name){ lua_pushboolean(L,1); return 1; }
-                    lua_pushboolean(L,0);
-                    return 1;
-                }, 1);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Scene.Instantiate(templateName, x,y,z) -> newName | nil в”Ђв”Ђ
-                // РљР»РѕРЅРёСЂСѓРµС‚ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ РѕР±СЉРµРєС‚ (РёСЃРїРѕР»СЊР·СѓР№ РµРіРѕ РєР°Рє "РїСЂРµС„Р°Р±": СЂР°Р·РјРµСЃС‚РёР» РІ СЃС†РµРЅРµ
-                // РѕРґРёРЅ СЂР°Р·, РґР°Р»СЊС€Рµ СЃРїР°РІРЅРёС€СЊ РєРѕРїРёРё РїРѕ РёРјРµРЅРё). РљРѕРїРёСЂСѓРµС‚ РјРµС€/РјР°С‚РµСЂРёР°Р»С‹/С„РёР·РёРєСѓ/СЃРєРµР№Р».
-                // РІРѕРё Lua-СЃРєСЂРёРїС‚С‹ РєР»РѕРЅ РќР• Р·Р°РїСѓСЃРєР°РµС‚ вЂ” РёРј СѓРїСЂР°РІР»СЏРµС‚ СЃРєСЂРёРїС‚, РєРѕС‚РѕСЂС‹Р№ РµРіРѕ Р·Р°СЃРїР°РІРЅРёР»
-                // (С‚Р°Рє РїСЂРѕС‰Рµ РґР»СЏ РїСѓР»СЊ/РІСЂР°РіРѕРІ: РѕРґРёРЅ "РјРµРЅРµРґР¶РµСЂ" РґРІРёРіР°РµС‚ Рё СѓРґР°Р»СЏРµС‚ РёС… РїРѕ РёРјРµРЅРё).
-                lua_pushstring(LL, "Instantiate");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* tname=luaL_checkstring(L,1);
-                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
-                    SceneObject* tmpl=nullptr;
-                    for(auto& o:*objs) if(o.name==tname){ tmpl=&o; break; }
-                    if(!tmpl){ lua_pushnil(L); return 1; }
-                    static int s_InstCounter=0;
-                    SceneObject clone = *tmpl;
-                    clone.name = tmpl->name + "_Clone" + std::to_string(++s_InstCounter);
-                    clone.pos = glm::vec3(x,y,z);
-                    clone.luaInstances.clear();
-                    clone.ecsID = scene.CreateEntity(clone.name);
-                    scene.GetTransform(clone.ecsID).Position = clone.pos;
-                    scene.GetTransform(clone.ecsID).Scale = clone.scale;
-                    scene.registry.AddComponent<VE::MeshComponent>(clone.ecsID, VE::Mesh{}, clone.color);
-                    if (tmpl->hasRigidBody) {
-                        VE::RigidbodyComponent rb; rb.Mass=tmpl->mass; rb.UseGravity=tmpl->useGravity;
-                        scene.registry.AddComponent<VE::RigidbodyComponent>(clone.ecsID, rb);
-                        if (scene.registry.HasComponent<VE::ColliderComponent>(tmpl->ecsID))
-                            scene.registry.AddComponent<VE::ColliderComponent>(clone.ecsID, scene.registry.GetComponent<VE::ColliderComponent>(tmpl->ecsID));
-                        // Р°РјРѕ С‚РµР»Рѕ Bullet СЃРѕР·РґР°СЃС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РЅР° СЃР»РµРґСѓСЋС‰РµРј Physics::Step()
-                        // (SyncToBullet СЃР°Рј РЅР°С…РѕРґРёС‚ РІСЃРµ Entity СЃ Rigidbody+Collider+Transform).
-                    }
-                    objs->push_back(clone);
-                    lua_pushstring(L, clone.name.c_str());
-                    return 1;
-                }, 1);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Scene.InstantiatePrefab(path, x,y,z) -> newName | nil в”Ђв”Ђ
-                // РљР°Рє Instantiate(), РЅРѕ РіСЂСѓР·РёС‚ РѕР±СЉРµРєС‚ РёР· .veprefab С„Р°Р№Р»Р° РЅР° РґРёСЃРєРµ вЂ”
-                // СЂР°Р±РѕС‚Р°РµС‚ РґР°Р¶Рµ РµСЃР»Рё С‚Р°РєРѕРіРѕ РѕР±СЉРµРєС‚Р° РЅРµС‚ РІ С‚РµРєСѓС‰РµР№ СЃС†РµРЅРµ (РІ РѕС‚Р»РёС‡РёРµ
-                // РѕС‚ Instantiate, РєРѕС‚РѕСЂС‹Р№ РєР»РѕРЅРёСЂСѓРµС‚ РѕР±СЉРµРєС‚, СѓР¶Рµ СЃС‚РѕСЏС‰РёР№ РІ СЃС†РµРЅРµ).
-                lua_pushstring(LL, "InstantiatePrefab");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* path=luaL_checkstring(L,1);
-                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
-
-                    SceneObject o;
-                    PrefabColliderInfo colInfo;
-                    if (!LoadPrefab(path, o, colInfo)) { lua_pushnil(L); return 1; }
-
-                    static int s_PrefabInstCounter=0;
-                    o.name = o.name + "_Inst" + std::to_string(++s_PrefabInstCounter);
-                    o.pos = glm::vec3(x,y,z);
-                    o.ecsID = scene.CreateEntity(o.name);
-                    scene.GetTransform(o.ecsID).Position = o.pos;
-                    scene.GetTransform(o.ecsID).Scale = o.scale;
-                    scene.registry.AddComponent<VE::MeshComponent>(o.ecsID, VE::Mesh{}, o.color);
-                    if (o.hasRigidBody) {
-                        auto& rb = scene.registry.AddComponent<VE::RigidbodyComponent>(o.ecsID);
-                        rb.Mass = o.mass; rb.UseGravity = o.useGravity;
-                    }
-                    if (colInfo.hasCollider) {
-                        VE::ColliderComponent col;
-                        col.Shape = (VE::ColliderComponent::ShapeType)colInfo.shape;
-                        col.HalfSize = {colInfo.hx, colInfo.hy, colInfo.hz};
-                        col.Radius = colInfo.radius; col.Height = colInfo.height;
-                        col.IsTrigger = colInfo.isTrigger;
-                        scene.registry.AddComponent<VE::ColliderComponent>(o.ecsID) = col;
-                    }
-                    objs->push_back(o);
-                    lua_pushstring(L, o.name.c_str());
-                    return 1;
-                }, 1);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Scene.InstantiatePrimitive("Sphere", x,y,z, scale) -> newName в”Ђв”Ђ
-                // Р‘С‹СЃС‚СЂС‹Р№ СЃРїР°РІРЅ Р±РµР· Р·Р°СЂР°РЅРµРµ РїРѕРґРіРѕС‚РѕРІР»РµРЅРЅРѕРіРѕ С€Р°Р±Р»РѕРЅР° (РЅР°РїСЂ. РїСѓР»СЏ-Р·Р°РіР»СѓС€РєР° СЃС„РµСЂРѕР№).
-                lua_pushstring(LL, "InstantiatePrimitive");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    std::string tn = luaL_checkstring(L,1);
-                    float x=(float)luaL_optnumber(L,2,0), y=(float)luaL_optnumber(L,3,0), z=(float)luaL_optnumber(L,4,0);
-                    float sc=(float)luaL_optnumber(L,5,1.0);
-                    PrimitiveType t = PrimitiveType::Cube;
-                    if (tn=="Sphere") t=PrimitiveType::Sphere;
-                    else if (tn=="Cylinder") t=PrimitiveType::Cylinder;
-                    else if (tn=="Pyramid") t=PrimitiveType::Pyramid;
-                    else if (tn=="Capsule") t=PrimitiveType::Capsule;
-                    else if (tn=="Plane") t=PrimitiveType::Plane;
-                    static int s_PrimCounter=0;
-                    SceneObject o;
-                    o.name = tn + "_Spawned" + std::to_string(++s_PrimCounter);
-                    o.pos = glm::vec3(x,y,z);
-                    o.scale = glm::vec3(sc,sc,sc);
-                    o.type = t;
-                    o.color = glm::vec3(0.7f,0.7f,0.75f);
-                    o.ecsID = scene.CreateEntity(o.name);
-                    scene.GetTransform(o.ecsID).Position = o.pos;
-                    scene.GetTransform(o.ecsID).Scale = o.scale;
-                    scene.registry.AddComponent<VE::MeshComponent>(o.ecsID, VE::Mesh{}, o.color);
-                    objs->push_back(o);
-                    lua_pushstring(L, o.name.c_str());
-                    return 1;
-                }, 1);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Scene.Destroy(name) -> bool в”Ђв”Ђ
-                // РЈРґР°Р»СЏРµС‚ РѕР±СЉРµРєС‚ РёР· СЃС†РµРЅС‹ РїСЂСЏРјРѕ РІРѕ РІСЂРµРјСЏ РёРіСЂС‹ (РїСѓР»СЏ СѓР»РµС‚РµР»Р°/РїРѕРїР°Р»Р°, РІСЂР°Рі СѓРјРµСЂ Рё С‚.Рї.)
-                lua_pushstring(LL, "Destroy");
-                lua_pushlightuserdata(LL, (void*)&objects);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* objs=(std::vector<SceneObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* name=luaL_checkstring(L,1);
-                    for(size_t i=0;i<objs->size();i++){
-                        if((*objs)[i].name==name){
-                            VE::EntityID id=(*objs)[i].ecsID;
-                            VE::Physics::Get().RemoveBody(id);
-                            if (scene.registry.IsAlive(id)) scene.registry.DestroyEntity(id);
-                            objs->erase(objs->begin()+i);
-                            lua_pushboolean(L,1);
-                            return 1;
-                        }
-                    }
-                    lua_pushboolean(L,0);
-                    return 1;
-                }, 1);
-                lua_settable(LL, -3);
-
-                // в”Ђв”Ђ Scene.SetCamera(name) -> bool в”Ђв”Ђ
-                // Р”РµР»Р°РµС‚ РєР°РјРµСЂСѓ СЃ СЌС‚РёРј РёРјРµРЅРµРј Р°РєС‚РёРІРЅРѕР№ (isPrimary=true), РѕСЃС‚Р°Р»СЊРЅС‹Рµ СЃС†РµРЅС‹-РєР°РјРµСЂС‹
-                // СЃС‚Р°РЅРѕРІСЏС‚СЃСЏ РЅРµР°РєС‚РёРІРЅС‹РјРё вЂ” С‚РѕС‚ Р¶Рµ С„Р»Р°Рі, С‡С‚Рѕ Рё РїРµСЂРµРєР»СЋС‡РµРЅРёРµ РєР°РјРµСЂС‹ РІ СЂРµРґР°РєС‚РѕСЂРµ.
-                lua_pushstring(LL, "SetCamera");
-                lua_pushlightuserdata(LL, (void*)&sceneCameras);
-                lua_pushcclosure(LL, [](lua_State* L)->int{
-                    auto* cams=(std::vector<CameraObject>*)lua_touserdata(L, lua_upvalueindex(1));
-                    const char* name=luaL_checkstring(L,1);
-                    bool found=false;
-                    for(auto& c:*cams){
-                        bool match=(c.name==name);
-                        c.isPrimary=match;
-                        if(match) found=true;
-                    }
-                    lua_pushboolean(L, found);
-                    return 1;
-                }, 1);
-                lua_settable(LL, -3);
-
-                lua_setglobal(LL, "Scene");
-            }
-
-            // в”Ђв”Ђ Environment API: РІСЂРµРјСЏ СЃСѓС‚РѕРє Рё С‚СѓРјР°РЅ РёР· Lua в”Ђв”Ђ
+            // ── Environment API: время суток и туман из Lua ──
             // Environment.SetTimeOfDay(hours) / GetTimeOfDay()
             // Environment.SetFog(density, r, g, b)
             {
@@ -1148,6 +264,7 @@ static bool gameCameraInitialized = false;
                     float h=(float)luaL_optnumber(L,1,12.0);
                     while(h<0.f)h+=24.f; g_TimeOfDay=fmodf(h,24.f);
                     return 0;
+}
                 }, 0);
                 lua_settable(LL, -3);
 
@@ -1172,10 +289,9 @@ static bool gameCameraInitialized = false;
                 lua_settable(LL, -3);
 
                 lua_setglobal(LL, "Environment");
-            }
 
-            // в”Ђв”Ђ Animation API: СѓРїСЂР°РІР»РµРЅРёРµ РїСЂРѕРёРіСЂС‹РІР°РЅРёРµРј Р°РЅРёРјР°С†РёРё РЎР’РћР•Р“Рћ РѕР±СЉРµРєС‚Р° в”Ђв”Ђ
-            // Animation.Play("РРјСЏРљР»РёРїР°") РёР»Рё Animation.Play(0) РїРѕ РёРЅРґРµРєСЃСѓ
+            // ── Animation API: управление проигрыванием анимации СВОЕГО объекта ──
+            // Animation.Play("ИмяКлипа") или Animation.Play(0) по индексу
             // Animation.Stop() / Animation.SetLoop(true/false) / Animation.IsPlaying()
             {
                 lua_State* LL = luaInst->L;
@@ -1238,8 +354,8 @@ static bool gameCameraInitialized = false;
                     return 1;
                 });
 
-                // PlayAnimation / StopAnimation вЂ” С‚Рѕ Р¶Рµ СЃР°РјРѕРµ, С‡С‚Рѕ Play/Stop РІС‹С€Рµ (Р°Р»РёР°СЃС‹ РїРѕРґ
-                // РёРјРµРЅР°РјРё, РєРѕС‚РѕСЂС‹Рµ РѕР±С‹С‡РЅРѕ РѕР¶РёРґР°СЋС‚ РІ РѕСЃС‚Р°Р»СЊРЅС‹С… РґРІРёР¶РєР°С…/СѓСЂРѕРєР°С…).
+                // PlayAnimation / StopAnimation — то же самое, что Play/Stop выше (алиасы под
+                // именами, которые обычно ожидают в остальных движках/уроках).
                 pushSelfFn("PlayAnimation", [](lua_State* L)->int{
                     VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     extern std::vector<SceneObject>* g_LuaObjectsPtr;
@@ -1269,8 +385,8 @@ static bool gameCameraInitialized = false;
                     return 0;
                 });
 
-                // Animation.SetAnimationSpeed(speed) вЂ” РјРЅРѕР¶РёС‚РµР»СЊ СЃРєРѕСЂРѕСЃС‚Рё РїСЂРѕРёРіСЂС‹РІР°РЅРёСЏ
-                // (1.0 = РѕР±С‹С‡РЅР°СЏ СЃРєРѕСЂРѕСЃС‚СЊ, 2.0 = РІРґРІРѕРµ Р±С‹СЃС‚СЂРµРµ, 0.5 = Р·Р°РјРµРґР»РµРЅРЅРѕ, РѕС‚СЂРёС†Р°С‚РµР»СЊРЅРѕРµ вЂ” РЅР°Р·Р°Рґ).
+                // Animation.SetAnimationSpeed(speed) — множитель скорости проигрывания
+                // (1.0 = обычная скорость, 2.0 = вдвое быстрее, 0.5 = замедленно, отрицательное — назад).
                 pushSelfFn("SetAnimationSpeed", [](lua_State* L)->int{
                     VE::EntityID id=(VE::EntityID)lua_tointeger(L, lua_upvalueindex(1));
                     float speed=(float)luaL_optnumber(L,1,1.0);
@@ -1303,236 +419,27 @@ static bool gameCameraInitialized = false;
                     logError("Lua load failed: "+obj.name+" ("+fs::path(scriptPath).filename().string()+")");
                 }
             }
-            }
-        }
         logInfo("Play");
-    };
 
-    // Standalone game path must never block on async scene management.
-    // If the scene file is missing or cannot be resolved, we fall back to the built-in default scene.
+    // ── Player mode: сразу грузим сцену, Play включится автоматически после загрузки ──
     if (g_PlayerMode) {
-        std::string sceneToLoad = g_PlayerScenePath;
-        if (sceneToLoad.empty()) sceneToLoad = projectRoot + "\\Assets\\Scenes\\scene.vescene";
-        if (sceneToLoad.find(':') == std::string::npos && !sceneToLoad.empty()) {
-            sceneToLoad = projectRoot + "\\" + sceneToLoad;
-        }
-        if (!sceneToLoad.empty() && fs::exists(sceneToLoad)) {
-            LoadScene(sceneToLoad, objects, lights, sceneCameras, sel, selType);
-            currentScenePath = sceneToLoad;
-            logInfo("Player mode: launching " + sceneToLoad);
-        } else {
-            logWarn("Player mode scene not found, using default in-memory scene: " + sceneToLoad);
-            // keep the pre-created default scene that is already in memory; do not reload or stall
-        }
-        g_PlayerAutoPlayPending = false;
-        StartPlay();
+        VE::SceneManager::Get().RequestLoad(g_PlayerScenePath);
+        logInfo("Player mode: launching "+g_PlayerScenePath);
     }
 
     const char* typeNames[]={"Cube","Sphere","Cylinder","Pyramid","Capsule","Plane","Model","Empty"};
     static float hierW=240.f, inspW=280.f, bottomH=190.f;
     const float sideW=54.f, toolH=44.f;
 
-        VE::Console::Get().AddCmd("skybox", "toggle skybox", "skybox [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showSkybox; showSkybox = on; VE::Console::Get().SetBool("r_skybox", on); });
-        VE::Console::Get().AddCmd("grid", "toggle editor grid", "grid [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGrid; showGrid = on; VE::Console::Get().SetBool("r_grid", on); });
-        VE::Console::Get().AddCmd("gizmos", "toggle gizmos", "gizmos [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGizmos; showGizmos = on; VE::Console::Get().SetBool("r_gizmos", on); });
-        VE::Console::Get().AddCmd("pause", "toggle pause", "", [&](const std::vector<std::string>&) { isPaused = !isPaused; VE::Console::Get().Print(VE::LogLevel::Warn, isPaused ? "paused" : "resumed"); });
-        VE::Console::Get().AddCmd("fps_lock", "toggle 60fps lock", "fps_lock [0|1]", [&](const std::vector<std::string>& a) { g_FpsLock = a.size()>1 ? (a[1]=="1") : !g_FpsLock; });
-        VE::Console::Get().AddCmd("sel", "show/select object by index", "sel [i]", [&](const std::vector<std::string>& a) { if (a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Echo, "sel = " + std::to_string(sel)); return; } sel = std::stoi(a[1]); selType = SelectionType::Object; });
-        VE::Console::Get().AddCmd("sel_name", "select object by name", "sel_name <name>", [&](const std::vector<std::string>& a) { if (a.size()<2) return; for (int i=0;i<(int)objects.size();++i) if (objects[i].name==a[1]) { sel=i; selType=SelectionType::Object; VE::Console::Get().Print(VE::LogLevel::Echo, "selected " + a[1]); return; } VE::Console::Get().Print(VE::LogLevel::Error, "not found: " + a[1]); });
-        VE::Console::Get().AddCmd("obj_pos", "print/set selected position", "obj_pos [x y z]", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } auto& o=objects[sel]; if (a.size()>=4) { o.pos.x=std::stof(a[1]); o.pos.y=std::stof(a[2]); o.pos.z=std::stof(a[3]); } VE::Console::Get().Print(VE::LogLevel::Echo, o.name + " pos " + std::to_string(o.pos.x) + " " + std::to_string(o.pos.y) + " " + std::to_string(o.pos.z)); });
-        VE::Console::Get().AddCmd("obj_scale", "set selected scale", "obj_scale <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_scale <x y z>"); return; } auto& o=objects[sel]; o.scale.x=std::stof(a[1]); o.scale.y=std::stof(a[2]); o.scale.z=std::stof(a[3]); });
-        VE::Console::Get().AddCmd("obj_rot", "set selected rotation", "obj_rot <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rot <x y z>"); return; } auto& o=objects[sel]; o.rot.x=std::stof(a[1]); o.rot.y=std::stof(a[2]); o.rot.z=std::stof(a[3]); });
-        VE::Console::Get().AddCmd("obj_rename", "rename selected", "obj_rename <name>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rename <name>"); return; } objects[sel].name=a[1]; });
-        VE::Console::Get().AddCmd("obj_delete", "delete selected object", "", [&](const std::vector<std::string>&) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } VE::Console::Get().Print(VE::LogLevel::Warn, "deleted " + objects[sel].name); objects.erase(objects.begin()+sel); sel=-1; });
-        VE::Console::Get().AddCmd("ui_list", "list UI elements and sprites", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Echo, "ui: " + std::to_string(uiElements.size()) + " | sprites: " + std::to_string(sprites2D.size())); });
-        VE::Console::Get().AddCmd("alias", "create command alias", "alias <name> <command...>", [&](const std::vector<std::string>& a) { if (a.size()<3) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: alias <name> <command...>"); return; } std::string s; for (size_t i=2;i<a.size();++i){ if(i>2)s+=' '; s+=a[i]; } VE::Console::Get().SetAlias(a[1], s); VE::Console::Get().Print(VE::LogLevel::Echo, "alias " + a[1] + " = " + s); });
-        VE::Console::Get().AddInt("r_shadow_bias", 0, "shadow bias (x1000)");
-        VE::Console::Get().AddFloat("r_ambient", 0.3f, "ambient light strength");
-        VE::Console::Get().AddFloat("r_sun_intensity", 1.f, "sun intensity");
-        VE::Console::Get().AddBool("r_vignette", false, "vignette post fx");
-        VE::Console::Get().AddBool("r_grain", false, "film grain");
-        VE::Console::Get().AddBool("r_ssao", false, "ambient occlusion");
-        VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
-        VE::Console::Get().AddBool("r_dof", false, "depth of field");
-        VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
-        VE::Console::Get().AddBool("r_antialias", true, "post AA");
-        VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
-        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
-        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
-        VE::Console::Get().AddBool("hud_show", true, "show HUD");
-        VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
-        VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
-        VE::Console::Get().AddBool("net_verbose", false, "net logging");
-        VE::Console::Get().AddInt("net_rate", 60, "net update rate");
-        VE::Console::Get().AddBool("dbg_draw_calls", false, "show draw calls");
-        VE::Console::Get().AddBool("dbg_normals", false, "debug normals");
-        VE::Console::Get().AddBool("dbg_colliders", false, "debug colliders");
-        VE::Console::Get().AddBool("dbg_lua", false, "lua verbose logging");
-        VE::Console::Get().AddCmd("skybox", "toggle skybox", "skybox [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showSkybox; showSkybox = on; VE::Console::Get().SetBool("r_skybox", on); });
-        VE::Console::Get().AddCmd("grid", "toggle editor grid", "grid [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGrid; showGrid = on; VE::Console::Get().SetBool("r_grid", on); });
-        VE::Console::Get().AddCmd("gizmos", "toggle gizmos", "gizmos [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGizmos; showGizmos = on; VE::Console::Get().SetBool("r_gizmos", on); });
-        VE::Console::Get().AddCmd("pause", "toggle pause", "", [&](const std::vector<std::string>&) { isPaused = !isPaused; VE::Console::Get().Print(VE::LogLevel::Warn, isPaused ? "paused" : "resumed"); });
-        VE::Console::Get().AddCmd("fps_lock", "toggle 60fps lock", "fps_lock [0|1]", [&](const std::vector<std::string>& a) { g_FpsLock = a.size()>1 ? (a[1]=="1") : !g_FpsLock; });
-        VE::Console::Get().AddCmd("sel", "show/select object by index", "sel [i]", [&](const std::vector<std::string>& a) { if (a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Echo, "sel = " + std::to_string(sel)); return; } sel = std::stoi(a[1]); selType = SelectionType::Object; });
-        VE::Console::Get().AddCmd("sel_name", "select object by name", "sel_name <name>", [&](const std::vector<std::string>& a) { if (a.size()<2) return; for (int i=0;i<(int)objects.size();++i) if (objects[i].name==a[1]) { sel=i; selType=SelectionType::Object; VE::Console::Get().Print(VE::LogLevel::Echo, "selected " + a[1]); return; } VE::Console::Get().Print(VE::LogLevel::Error, "not found: " + a[1]); });
-        VE::Console::Get().AddCmd("obj_pos", "print/set selected position", "obj_pos [x y z]", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } auto& o=objects[sel]; if (a.size()>=4) { o.pos.x=std::stof(a[1]); o.pos.y=std::stof(a[2]); o.pos.z=std::stof(a[3]); } VE::Console::Get().Print(VE::LogLevel::Echo, o.name + " pos " + std::to_string(o.pos.x) + " " + std::to_string(o.pos.y) + " " + std::to_string(o.pos.z)); });
-        VE::Console::Get().AddCmd("obj_scale", "set selected scale", "obj_scale <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_scale <x y z>"); return; } auto& o=objects[sel]; o.scale.x=std::stof(a[1]); o.scale.y=std::stof(a[2]); o.scale.z=std::stof(a[3]); });
-        VE::Console::Get().AddCmd("obj_rot", "set selected rotation", "obj_rot <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rot <x y z>"); return; } auto& o=objects[sel]; o.rot.x=std::stof(a[1]); o.rot.y=std::stof(a[2]); o.rot.z=std::stof(a[3]); });
-        VE::Console::Get().AddCmd("obj_rename", "rename selected", "obj_rename <name>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rename <name>"); return; } objects[sel].name=a[1]; });
-        VE::Console::Get().AddCmd("obj_delete", "delete selected object", "", [&](const std::vector<std::string>&) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } VE::Console::Get().Print(VE::LogLevel::Warn, "deleted " + objects[sel].name); objects.erase(objects.begin()+sel); sel=-1; });
-        VE::Console::Get().AddCmd("ui_list", "list UI elements and sprites", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Echo, "ui: " + std::to_string(uiElements.size()) + " | sprites: " + std::to_string(sprites2D.size())); });
-        VE::Console::Get().AddCmd("alias", "create command alias", "alias <name> <command...>", [&](const std::vector<std::string>& a) { if (a.size()<3) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: alias <name> <command...>"); return; } std::string s; for (size_t i=2;i<a.size();++i){ if(i>2)s+=' '; s+=a[i]; } VE::Console::Get().SetAlias(a[1], s); VE::Console::Get().Print(VE::LogLevel::Echo, "alias " + a[1] + " = " + s); });
-        VE::Console::Get().AddInt("r_shadow_bias", 0, "shadow bias (x1000)");
-        VE::Console::Get().AddFloat("r_ambient", 0.3f, "ambient light strength");
-        VE::Console::Get().AddFloat("r_sun_intensity", 1.f, "sun intensity");
-        VE::Console::Get().AddBool("r_vignette", false, "vignette post fx");
-        VE::Console::Get().AddBool("r_grain", false, "film grain");
-        VE::Console::Get().AddBool("r_ssao", false, "ambient occlusion");
-        VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
-        VE::Console::Get().AddBool("r_dof", false, "depth of field");
-        VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
-        VE::Console::Get().AddBool("r_antialias", true, "post AA");
-        VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
-        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
-        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
-        VE::Console::Get().AddBool("hud_show", true, "show HUD");
-        VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
-        VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
-        VE::Console::Get().AddBool("net_verbose", false, "net logging");
-        VE::Console::Get().AddInt("net_rate", 60, "net update rate");
-        VE::Console::Get().AddBool("dbg_draw_calls", false, "show draw calls");
-        VE::Console::Get().AddBool("dbg_normals", false, "debug normals");
-        VE::Console::Get().AddBool("dbg_colliders", false, "debug colliders");
-        VE::Console::Get().AddBool("dbg_lua", false, "lua verbose logging");
-
-    // Dev console: engine commands (CS2-style)
-    {
-        auto& con = VE::Console::Get();
-        VE::Console::Get().AddCmd("scene_list", "list scene objects/lights/cameras", "", [&](const std::vector<std::string>&) {
-            VE::Console::Get().Print(VE::LogLevel::Echo, "objects: " + std::to_string(objects.size()) + " | lights: " + std::to_string(lights.size()) + " | cameras: " + std::to_string(sceneCameras.size()));
-        });
-        VE::Console::Get().AddCmd("scene_clear", "clear current scene", "", [&](const std::vector<std::string>&) {
-            objects.clear(); lights.clear(); sceneCameras.clear(); sel = -1;
-            VE::Console::Get().Print(VE::LogLevel::Warn, "scene cleared");
-        });
-        VE::Console::Get().AddCmd("ed_play", "enter play mode", "", [&](const std::vector<std::string>&) { StartPlay(); });
-        VE::Console::Get().AddCmd("ed_stop", "stop play mode", "", [&](const std::vector<std::string>&) { isPlaying = false; VE::Console::Get().Print(VE::LogLevel::Warn, "stopped"); });
-        VE::Console::Get().AddCmd("quit", "close engine", "", [&](const std::vector<std::string>&) { glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE); });
-        VE::Console::Get().AddCmd("gl_info", "print OpenGL info", "", [&](const std::vector<std::string>&) {
-            auto& C = VE::Console::Get();
-            C.Print(VE::LogLevel::Echo, (const char*)glGetString(GL_VERSION));
-            C.Print(VE::LogLevel::Echo, (const char*)glGetString(GL_RENDERER));
-            C.Print(VE::LogLevel::Echo, (const char*)glGetString(GL_VENDOR));
-        });
-        VE::Console::Get().AddCmd("wireframe", "toggle wireframe render", "wireframe [0|1]", [&](const std::vector<std::string>& a) {
-            bool on = a.size() > 1 ? (a[1] == "1") : !VE::Console::Get().GetBool("r_wireframe");
-            VE::Console::Get().SetBool("r_wireframe", on);
-            glPolygonMode(GL_FRONT_AND_BACK, on ? GL_LINE : GL_FILL);
-        });
-        VE::Console::Get().AddCmd("vsync", "toggle vsync", "vsync [0|1]", [&](const std::vector<std::string>& a) {
-            bool on = a.size() > 1 ? (a[1] == "1") : !VE::Console::Get().GetBool("r_vsync");
-            VE::Console::Get().SetBool("r_vsync", on);
-            glfwSwapInterval(on ? 1 : 0);
-        });
-        VE::Console::Get().AddCmd("res", "set window size", "res <w> <h>", [&](const std::vector<std::string>& a) {
-            if (a.size() < 3) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: res <w> <h>"); return; }
-            glfwSetWindowSize(glfwGetCurrentContext(), std::stoi(a[1]), std::stoi(a[2]));
-        });
-        VE::Console::Get().AddCmd("snd_play", "play sound file", "snd_play <path> [vol]", [&](const std::vector<std::string>& a) {
-            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: snd_play <path>"); return; }
-            float v = a.size() > 2 ? std::stof(a[2]) : 1.f;
-            VE::AudioEngine::Get().PlaySound(a[1], v);
-        });
-        VE::Console::Get().AddCmd("music_play", "play music loop", "music_play <path> [vol]", [&](const std::vector<std::string>& a) {
-            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: music_play <path>"); return; }
-            float v = a.size() > 2 ? std::stof(a[2]) : 1.f;
-            VE::AudioEngine::Get().PlayMusic(a[1], v);
-        });
-        VE::Console::Get().AddCmd("music_stop", "stop music", "", [&](const std::vector<std::string>&) { VE::AudioEngine::Get().StopMusic(); });
-        VE::Console::Get().AddCmd("snd_mute_toggle", "mute/unmute all", "", [&](const std::vector<std::string>&) {
-            bool m = !VE::Console::Get().GetBool("snd_mute");
-            VE::Console::Get().SetBool("snd_mute", m);
-            VE::AudioEngine::Get().SetMasterVolume(m ? 0.f : VE::Console::Get().GetFloat("snd_master", 1.f));
-        });
-        VE::Console::Get().AddCmd("exec", "execute config file line by line", "exec <path>", [&](const std::vector<std::string>& a) {
-            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: exec <path>"); return; }
-            std::ifstream f(a[1]);
-            if (!f) { VE::Console::Get().Print(VE::LogLevel::Error, "cannot open " + a[1]); return; }
-            std::string ln;
-            while (std::getline(f, ln)) if (!ln.empty() && ln[0] != '/' && ln[0] != '#') VE::Console::Get().Execute(ln);
-        });
-        VE::Console::Get().AddCmd("time", "print engine time", "", [&](const std::vector<std::string>&) {
-            VE::Console::Get().Print(VE::LogLevel::Echo, "t = " + std::to_string(glfwGetTime()));
-        });
-        VE::Console::Get().AddCmd("map", "load scene (like CS2 map)", "map <scenepath>", [&](const std::vector<std::string>& a) {
-            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: map <scenepath>"); return; }
-            VE::SceneManager::Get().RequestLoad(a[1]);
-        });
-        VE::Console::Get().AddCmd("changelevel", "alias of map", "changelevel <scenepath>", [&](const std::vector<std::string>& a) {
-            if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: changelevel <scenepath>"); return; }
-            VE::SceneManager::Get().RequestLoad(a[1]);
-        });
-        VE::Console::Get().AddCmd("disconnect", "reload current scene", "", [&](const std::vector<std::string>&) { VE::SceneManager::Get().RequestReload(); });
-        VE::Console::Get().AddInt("fps_max", 0, "max fps (0 = unlimited)");
-        VE::Console::Get().AddBool("r_shadows", true, "shadow map");
-        VE::Console::Get().AddInt("r_shadow_res", 2048, "shadow map resolution");
-        VE::Console::Get().AddBool("r_outline", true, "selection outline");
-        VE::Console::Get().AddFloat("r_exposure", 1.f, "exposure multiplier");
-        VE::Console::Get().AddBool("phys_debug", false, "physics debug draw");
-        VE::Console::Get().AddFloat("phys_step", 0.0166f, "fixed physics step");
-        VE::Console::Get().AddStr("sv_name", "VisualEngine", "server name");
-        VE::Console::Get().AddBool("sv_cheats", false, "allow cheat commands");
-        VE::Console::Get().AddCmd("god", "cheat placeholder", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Warn, "god: not implemented yet"); });
-        VE::Console::Get().AddCmd("noclip", "cheat placeholder", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Warn, "noclip: not implemented yet"); });
-        VE::Console::Get().AddCmd("give", "cheat placeholder", "give <item>", [&](const std::vector<std::string>& a) { VE::Console::Get().Print(VE::LogLevel::Warn, "give: not implemented yet (" + (a.size() > 1 ? a[1] : std::string("?")) + ")"); });
-    }
-        VE::Console::Get().AddCmd("skybox", "toggle skybox", "skybox [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showSkybox; showSkybox = on; VE::Console::Get().SetBool("r_skybox", on); });
-        VE::Console::Get().AddCmd("grid", "toggle editor grid", "grid [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGrid; showGrid = on; VE::Console::Get().SetBool("r_grid", on); });
-        VE::Console::Get().AddCmd("gizmos", "toggle gizmos", "gizmos [0|1]", [&](const std::vector<std::string>& a) { bool on = a.size()>1 ? (a[1]=="1") : !showGizmos; showGizmos = on; VE::Console::Get().SetBool("r_gizmos", on); });
-        VE::Console::Get().AddCmd("pause", "toggle pause", "", [&](const std::vector<std::string>&) { isPaused = !isPaused; VE::Console::Get().Print(VE::LogLevel::Warn, isPaused ? "paused" : "resumed"); });
-        VE::Console::Get().AddCmd("fps_lock", "toggle 60fps lock", "fps_lock [0|1]", [&](const std::vector<std::string>& a) { g_FpsLock = a.size()>1 ? (a[1]=="1") : !g_FpsLock; });
-        VE::Console::Get().AddCmd("sel", "show/select object by index", "sel [i]", [&](const std::vector<std::string>& a) { if (a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Echo, "sel = " + std::to_string(sel)); return; } sel = std::stoi(a[1]); selType = SelectionType::Object; });
-        VE::Console::Get().AddCmd("sel_name", "select object by name", "sel_name <name>", [&](const std::vector<std::string>& a) { if (a.size()<2) return; for (int i=0;i<(int)objects.size();++i) if (objects[i].name==a[1]) { sel=i; selType=SelectionType::Object; VE::Console::Get().Print(VE::LogLevel::Echo, "selected " + a[1]); return; } VE::Console::Get().Print(VE::LogLevel::Error, "not found: " + a[1]); });
-        VE::Console::Get().AddCmd("obj_pos", "print/set selected position", "obj_pos [x y z]", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } auto& o=objects[sel]; if (a.size()>=4) { o.pos.x=std::stof(a[1]); o.pos.y=std::stof(a[2]); o.pos.z=std::stof(a[3]); } VE::Console::Get().Print(VE::LogLevel::Echo, o.name + " pos " + std::to_string(o.pos.x) + " " + std::to_string(o.pos.y) + " " + std::to_string(o.pos.z)); });
-        VE::Console::Get().AddCmd("obj_scale", "set selected scale", "obj_scale <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_scale <x y z>"); return; } auto& o=objects[sel]; o.scale.x=std::stof(a[1]); o.scale.y=std::stof(a[2]); o.scale.z=std::stof(a[3]); });
-        VE::Console::Get().AddCmd("obj_rot", "set selected rotation", "obj_rot <x y z>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<4) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rot <x y z>"); return; } auto& o=objects[sel]; o.rot.x=std::stof(a[1]); o.rot.y=std::stof(a[2]); o.rot.z=std::stof(a[3]); });
-        VE::Console::Get().AddCmd("obj_rename", "rename selected", "obj_rename <name>", [&](const std::vector<std::string>& a) { if (sel<0||sel>=(int)objects.size()||a.size()<2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: obj_rename <name>"); return; } objects[sel].name=a[1]; });
-        VE::Console::Get().AddCmd("obj_delete", "delete selected object", "", [&](const std::vector<std::string>&) { if (sel<0||sel>=(int)objects.size()) { VE::Console::Get().Print(VE::LogLevel::Error, "no selection"); return; } VE::Console::Get().Print(VE::LogLevel::Warn, "deleted " + objects[sel].name); objects.erase(objects.begin()+sel); sel=-1; });
-        VE::Console::Get().AddCmd("ui_list", "list UI elements and sprites", "", [&](const std::vector<std::string>&) { VE::Console::Get().Print(VE::LogLevel::Echo, "ui: " + std::to_string(uiElements.size()) + " | sprites: " + std::to_string(sprites2D.size())); });
-        VE::Console::Get().AddCmd("alias", "create command alias", "alias <name> <command...>", [&](const std::vector<std::string>& a) { if (a.size()<3) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: alias <name> <command...>"); return; } std::string s; for (size_t i=2;i<a.size();++i){ if(i>2)s+=' '; s+=a[i]; } VE::Console::Get().SetAlias(a[1], s); VE::Console::Get().Print(VE::LogLevel::Echo, "alias " + a[1] + " = " + s); });
-        VE::Console::Get().AddInt("r_shadow_bias", 0, "shadow bias (x1000)");
-        VE::Console::Get().AddFloat("r_ambient", 0.3f, "ambient light strength");
-        VE::Console::Get().AddFloat("r_sun_intensity", 1.f, "sun intensity");
-        VE::Console::Get().AddBool("r_vignette", false, "vignette post fx");
-        VE::Console::Get().AddBool("r_grain", false, "film grain");
-        VE::Console::Get().AddBool("r_ssao", false, "ambient occlusion");
-        VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
-        VE::Console::Get().AddBool("r_dof", false, "depth of field");
-        VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
-        VE::Console::Get().AddBool("r_antialias", true, "post AA");
-        VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
-        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
-        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
-        VE::Console::Get().AddBool("hud_show", true, "show HUD");
-        VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
-        VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
-        VE::Console::Get().AddBool("net_verbose", false, "net logging");
-        VE::Console::Get().AddInt("net_rate", 60, "net update rate");
-        VE::Console::Get().AddBool("dbg_draw_calls", false, "show draw calls");
-        VE::Console::Get().AddBool("dbg_normals", false, "debug normals");
-        VE::Console::Get().AddBool("dbg_colliders", false, "debug colliders");
-        VE::Console::Get().AddBool("dbg_lua", false, "lua verbose logging");
-
-
     while(!window->ShouldClose())
     {
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
-        // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
+        // ── Продвигаем время скелетной анимации (играет и в редакторе, для превью) ──
         for(auto& obj:objects){
             if(obj.animPlaying && obj.model && obj.model->hasSkeleton && obj.animIndex>=0)
                 obj.animTime += deltaTime * obj.animSpeed;
         }
-        // в”Ђв”Ђ РљР°СЃС‚РѕРјРЅР°СЏ РїРѕРєР°РґСЂРѕРІР°СЏ Р°РЅРёРјР°С†РёСЏ вЂ” РґРІРёРіР°РµС‚/РєСЂСѓС‚РёС‚/РјР°СЃС€С‚Р°Р±РёСЂСѓРµС‚ Р›Р®Р‘РћР™ РѕР±СЉРµРєС‚ в”Ђв”Ђ
+        // ── Кастомная покадровая анимация — двигает/крутит/масштабирует ЛЮБОЙ объект ──
         for(auto& obj:objects){
             if(!obj.customAnimPlaying || obj.customClipIndex<0 || obj.customClipIndex>=(int)obj.customClips.size()) continue;
             auto& clip = obj.customClips[obj.customClipIndex];
@@ -1545,7 +452,7 @@ static bool gameCameraInitialized = false;
             }
             SampleObjectClip(clip, obj.customAnimTime, obj.pos, obj.rot, obj.scale);
         }
-        // в”Ђв”Ђ РђРІС‚РѕСЃРѕС…СЂР°РЅРµРЅРёРµ СЃС†РµРЅС‹ (РЅР°СЃС‚СЂР°РёРІР°РµС‚СЃСЏ РІ Preferences) в”Ђв”Ђ
+        // ── Автосохранение сцены (настраивается в Preferences) ──
         {
             static float autosaveAccum=0.f;
             autosaveAccum += deltaTime;
@@ -1556,12 +463,12 @@ static bool gameCameraInitialized = false;
                 logInfo("Autosaved: "+currentScenePath);
             }
         }
-        // в”Ђв”Ђ Scene Manager: РїСЂРѕРІРµСЂСЏРµРј РѕС‚Р»РѕР¶РµРЅРЅСѓСЋ Р·Р°РіСЂСѓР·РєСѓ СЃС†РµРЅС‹ в”Ђв”Ђ
-        VE::SceneManager::Get().Tick();
+        // ── Scene Manager: проверяем отложенную загрузку сцены ──
+        if(VE::SceneManager::Get().Tick()) continue;
         if (g_PlayerAutoPlayPending) { g_PlayerAutoPlayPending=false; StartPlay(); }
         VE::HUD::Get().BeginFrame();
     UILua::TickPopup();
-        g_DragHoverObj = -1; // СЃР±СЂРѕСЃ РєР°Р¶РґС‹Р№ РєР°РґСЂ, РѕР±РЅРѕРІР»СЏРµС‚СЃСЏ РІ drop target
+        g_DragHoverObj = -1; // сброс каждый кадр, обновляется в drop target
         float menuH=20.f;
         float viewH=io.DisplaySize.y-menuH-bottomH-toolH;
         float vpW=io.DisplaySize.x-sideW-hierW-inspW;
@@ -1569,24 +476,26 @@ static bool gameCameraInitialized = false;
 if (!isPlaying) {
         if(!sceneCameras.empty()){
             for(auto& sc:sceneCameras){if(sc.isPrimary){
+            if (!GameLua::g_instances.empty()) { gameCamera.Position = sc.pos; } else
                 if(sc.followTargetIndex>=0&&sc.followTargetIndex<(int)objects.size()&&isPlaying){
-                    // РљР°РјРµСЂР° "follow" РёРіСЂРѕРєР° (РєР°Рє РІ Unity child-camera) вЂ”
-                    // РїРѕР·РёС†РёСЏ = followTarget.pos + offset, РїРѕРІРѕСЂРѕС‚ РІ World Y =
-                    // followTarget.rot.y (СѓРїСЂР°РІР»СЏРµС‚СЃСЏ Lua-СЃРєСЂРёРїС‚РѕРј РёРіСЂРѕРєР°),
-                    // pitch Р±РµСЂС‘С‚СЃСЏ РёР· followTarget.lookPitch
+                    // Камера "follow" игрока (как в Unity child-camera) —
+                    // позиция = followTarget.pos + offset, поворот в World Y =
+                    // followTarget.rot.y (управляется Lua-скриптом игрока),
+                    // pitch берётся из followTarget.lookPitch
                     auto& target=objects[sc.followTargetIndex];
                     gameCamera.Position=target.pos+sc.followOffset;
-                    gameCamera.Yaw=target.rot.y-90.f;   // -90 РєРѕСЂСЂРµРєС†РёСЏ РїРѕРґ Yaw=0 СЃРјРѕС‚СЂСЏС‰РёР№ РїРѕ -Z
+                    gameCamera.Yaw=target.rot.y-90.f;   // -90 коррекция под Yaw=0 смотрящий по -Z
                     gameCamera.Pitch=target.lookPitch;
                     gameCamera.UpdateVectors();
                 } else {
-                    gameCamera.Position=sc.pos;
+                    gameCamera.Position=sc.pos; gameCamera.Front = glm::normalize(((objects.empty()?glm::vec3(0,1,0):objects[0].pos+glm::vec3(0,1,0)))-sc.pos); gameCamera.Up = glm::vec3(0,1,0);
                 }
                 break;
             }}
         }
 } // end !isPlaying camera sync
 if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
+    if (!GameLua::g_instances.empty()) gameCameraInitialized = true; else
     for (auto& sc:sceneCameras) if (sc.isPrimary) {
         if (sc.followTargetIndex>=0 && sc.followTargetIndex<(int)objects.size()) {
             auto& t=objects[sc.followTargetIndex];
@@ -1594,12 +503,12 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
             gameCamera.Yaw=t.rot.y-90.f;
             gameCamera.Pitch=t.lookPitch;
             gameCamera.UpdateVectors();
-        } else { gameCamera.Position=sc.pos; }
+        } else { gameCamera.Position=sc.pos; gameCamera.Front = glm::normalize(((objects.empty()?glm::vec3(0,1,0):objects[0].pos+glm::vec3(0,1,0)))-sc.pos); gameCamera.Up = glm::vec3(0,1,0); }
         break;
     }
     gameCameraInitialized = true;
 }
-    // В Play gameCamera управляется CharacterController/Lua — НЕ перезаписываем её
+    // � Play gameCamera ����������� CharacterController/Lua � �� �������������� �
 
         if(!io.WantCaptureKeyboard){
             if(glfwGetKey(native,GLFW_KEY_W)==GLFW_PRESS&&rightMouseDown) camera.ProcessKeyboard(0,deltaTime);
@@ -1645,11 +554,11 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
         float gs=dist*0.16f;
 
         glm::mat4 view=camera.GetViewMatrix();
-        // РџРµСЂРµСЃС‡РёС‚С‹РІР°РµРј aspect ratio РёР· С‚РµРєСѓС‰РµРіРѕ СЂР°Р·РјРµСЂР° viewport
+        // Пересчитываем aspect ratio из текущего размера viewport
         float vpAspect = (g_VpSize.x > 1 && g_VpSize.y > 1) ? (g_VpSize.x / g_VpSize.y) : (vpW/viewH);
         glm::mat4 proj=camera.GetProjectionMatrix(vpAspect);
 
-        // в”Ђв”Ђ Р РёСЃРѕРІР°РЅРёРµ РјР°СЃРєРё РєРёСЃС‚СЊСЋ вЂ” РїСЂРёРѕСЂРёС‚РµС‚ РЅР°Рґ РѕР±С‹С‡РЅС‹Рј РІС‹РґРµР»РµРЅРёРµРј/РіРёР·РјРѕ, РїРѕРєР° Р°РєС‚РёРІРµРЅ СЂРµР¶РёРј в”Ђв”Ђ
+        // ── Рисование маски кистью — приоритет над обычным выделением/гизмо, пока активен режим ──
         if (g_EditorMode==EditorMode::PaintMask && leftDown && selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
             double lx=mouseX-g_VpPos.x, ly=mouseY-g_VpPos.y;
             int vw=(int)g_VpSize.x, vh=(int)g_VpSize.y;
@@ -1659,7 +568,7 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                 if (RaycastObjectUV(ray, objects[sel], uv)) {
                     auto& obj = objects[sel];
                     if (!obj.materials.empty() && obj.materials[0].maskPixelSize>0) {
-                        bool restoreLayer2 = g_BrushPaintMode != ImGui::GetIO().KeyShift; // С‚СѓР»Р±Р°СЂ Р·Р°РґР°С‘С‚ СЂРµР¶РёРј, Shift РІСЂРµРјРµРЅРЅРѕ РёРЅРІРµСЂС‚РёСЂСѓРµС‚
+                        bool restoreLayer2 = g_BrushPaintMode != ImGui::GetIO().KeyShift; // тулбар задаёт режим, Shift временно инвертирует
                         StampBrush(obj.materials[0], uv, g_BrushRadius, restoreLayer2);
                     }
                 }
@@ -1683,8 +592,8 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                     }
                     if(hitAxis!=GizmoAxis::None){
                         hitGizmo=true;dragAxis=hitAxis;dragStartPos=selPos;
-                        if(selType==SelectionType::Object&&sel>=0){dragStartRot=objects[sel].rot;dragStartScale=objects[sel].scale;}
-                        g_UndoDragObjIndex=sel; g_UndoDragSelType=selType; // Undo/Redo: Р·Р°РїРѕРјРёРЅР°РµРј С‡С‚Рѕ С‚Р°С‰РёРј
+                        if(selType==SelectionType::Object&&sel>=0){dragStartRot=objects[sel].rot;dragStartScale=objects[sel].scale;} else if(selType==SelectionType::Camera&&selCamera>=0){dragStartRot=sceneCameras[selCamera].rot;}
+                        g_UndoDragObjIndex=sel; g_UndoDragSelType=selType; // Undo/Redo: запоминаем что тащим
                         glm::vec3 axDir=axes[(int)hitAxis-1];
                         glm::vec3 plN=glm::normalize(glm::cross(axDir,glm::cross(camera.Front,axDir)));
                         float t=rayPlaneT(ray,plN,selPos);dragStartHit=t>0?ray.origin+ray.dir*t:selPos;
@@ -1740,9 +649,12 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                 else if(gizmoMode==GizmoMode::Rotate&&selType==SelectionType::Object&&sel>=0){
                     float signs[3]={1.f,-1.f,1.f};glm::vec3 ro=dragStartRot;ro[ai]+=p*90.f*signs[ai];objects[sel].rot=ro;
                 }
+                else if(gizmoMode==GizmoMode::Rotate&&selType==SelectionType::Camera&&selCamera>=0){
+                    float signs[3]={1.f,-1.f,1.f};glm::vec3 ro=dragStartRot;ro[ai]+=p*90.f*signs[ai];sceneCameras[selCamera].rot=ro;
+                }
             }
         }
-        // в”Ђв”Ђ Undo/Redo: РґСЂР°Рі РіРёР·РјРѕ С‚РѕР»СЊРєРѕ С‡С‚Рѕ Р·Р°РєРѕРЅС‡РёР»СЃСЏ вЂ” Р·Р°РїРёСЃС‹РІР°РµРј "Р±С‹Р»Рѕ/СЃС‚Р°Р»Рѕ" в”Ђв”Ђ
+        // ── Undo/Redo: драг гизмо только что закончился — записываем "было/стало" ──
         if (g_PrevDragAxis != GizmoAxis::None && dragAxis == GizmoAxis::None &&
             g_UndoDragSelType == SelectionType::Object &&
             g_UndoDragObjIndex >= 0 && g_UndoDragObjIndex < (int)objects.size())
@@ -1765,7 +677,7 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
         }
         g_PrevDragAxis = dragAxis;
 
-        // ── Parenting: дети следуют за родителем ──
+        // -- Parenting: ���� ������� �� ��������� --
         static std::vector<glm::vec3> prevPos;
         if ((int)prevPos.size()!=(int)objects.size()) { prevPos.assign(objects.size(), glm::vec3(0)); }
         if (!g_SkipPropagate) {
@@ -1792,7 +704,7 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                 auto& cc = scene.registry.GetComponent<VE::CharacterControllerComponent>(objects[oi].ecsID);
                 cc.targetObjectIndex = oi;
                 
-                // Управление WASD + Space + Shift
+                // ���������� WASD + Space + Shift
                 glm::vec3 moveDir(0);
                 float speed = cc.controller.Speed;
                 if (glfwGetKey(native, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) speed = cc.controller.RunSpeed;
@@ -1811,30 +723,30 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                 
                 if (glfwGetKey(native, GLFW_KEY_SPACE) == GLFW_PRESS) cc.controller.Jump();
                 
-                // Физика + коллизии
+                // ������ + ��������
                 std::vector<VE::CCCollider> ccols;
                 for (auto& oo : objects) { if (oo.ecsID!=objects[oi].ecsID && scene.registry.HasComponent<VE::ColliderComponent>(oo.ecsID)) { VE::CCCollider c2; c2.pos=oo.pos; c2.col=scene.registry.GetComponent<VE::ColliderComponent>(oo.ecsID); ccols.push_back(c2); } }
                 g_HasCtrl=true;
                 cc.controller.Move(moveDir, deltaTime, ccols);
                 
-                // Обновляем позицию объекта
+                // ��������� ������� �������
                 objects[oi].pos = cc.controller.Position;
                 scene.GetTransform(objects[oi].ecsID).Position = objects[oi].pos;
                 
-                // Камера следует за контроллером
+                // ������ ������� �� ������������
                 gameCamera.Position = cc.controller.Position + glm::vec3(0, cc.controller.Height * 0.9f, 0);
                 
-                // Захват мыши в FPS-режиме
+                // ������ ���� � FPS-������
                 break;
             }
         }
-        // Если нет контроллера — вернуть курсор
+        // ���� ��� ����������� � ������� ������
         bool hasAnyCtrl = false;
         for (auto& o : objects) if (scene.registry.HasComponent<VE::CharacterControllerComponent>(o.ecsID)) { hasAnyCtrl=true; break; }
         if (!hasAnyCtrl) glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     }
             VE::Physics::Get().Step(scene.registry,deltaTime);
-            VE::ParticleSystem::Get().Update(deltaTime); // С‡Р°СЃС‚РёС†С‹ РґРІРёРіР°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ РїРѕРєР° РёРіСЂР° РёРіСЂР°РµС‚
+            VE::ParticleSystem::Get().Update(deltaTime); // частицы двигаются только пока игра играет
             for(auto& obj:objects){
                 if(obj.hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(obj.ecsID)){
                     auto& tr=scene.GetTransform(obj.ecsID);
@@ -1860,7 +772,7 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                     obj.color.r=li->objR;obj.color.g=li->objG;obj.color.b=li->objB;
                     obj.lookPitch=li->objLookPitch;
                 }
-                // РїРѕР·РёС†РёСЏ Рё РїРѕРІРѕСЂРѕС‚ РјРѕРіР»Рё РёР·РјРµРЅРёС‚СЊСЃСЏ РёР· Lua вЂ” РїСЂРёРјРµРЅРёС‚СЊ РёС… Рё Рє Bullet rigidbody
+                // позиция и поворот могли измениться из Lua — применить их и к Bullet rigidbody
                 if(obj.hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(obj.ecsID)){
                     auto& tr=scene.GetTransform(obj.ecsID);
                     tr.Position=obj.pos;
@@ -1868,8 +780,8 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                 }
             }
 
-            // в”Ђв”Ђ Collision / Trigger callbacks в”Ђв”Ђ
-            // EntityID -> SceneObject* РґР»СЏ Р±С‹СЃС‚СЂРѕРіРѕ РїРѕРёСЃРєР° РїСЂРё РґРёСЃРїРµС‚С‡РµСЂРёР·Р°С†РёРё
+            // ── Collision / Trigger callbacks ──
+            // EntityID -> SceneObject* для быстрого поиска при диспетчеризации
             auto findObjByEntity=[&](VE::EntityID id)->SceneObject*{
                 for(auto& o:objects) if(o.ecsID==id) return &o;
                 return nullptr;
@@ -1898,11 +810,30 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
             }
         }
 
-        glDisable(GL_SCISSOR_TEST); // ImGui РјРѕРі РѕСЃС‚Р°РІРёС‚СЊ scissor РІРєР»СЋС‡С‘РЅРЅС‹Рј СЃ РјР°Р»РµРЅСЊРєРёРј РїСЂСЏРјРѕСѓРіРѕР»СЊРЅРёРєРѕРј РїСЂРѕС€Р»РѕРіРѕ РєР°РґСЂР°
+    if (g_LuaCamActive || !GameLua::g_instances.empty()) {
+            gameCamera.Position = glm::vec3(g_camPosX, g_camPosY, g_camPosZ);
+            gameCamera.Front = GameLua::g_camFront;
+            gameCamera.Up = glm::vec3(0,1,0);
+            gameCamera.UpdateVectors();
+        } else {
+            // �� Play: gameCamera = primary scene camera (��� � Unity)
+            for (auto& sc : sceneCameras) {
+                if (sc.isPrimary && sc.active) {
+                    gameCamera.Position = sc.pos;
+                    gameCamera.Yaw = 90.f - sc.rot.y;
+                    gameCamera.Pitch = -sc.rot.x;
+                    gameCamera.Fov = sc.fov;
+                    gameCamera.UpdateVectors();
+                    break;
+                }
+            }
+        }
+        gameCamera.UpdateVectors();
+        glDisable(GL_SCISSOR_TEST); // ImGui мог оставить scissor включённым с маленьким прямоугольником прошлого кадра
 
-        // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-        // РџСЂРѕРІРµСЂСЏРµРј, РёР·РјРµРЅРёР»СЃСЏ Р»Рё СЂР°Р·РјРµСЂ Viewport, Рё РїРµСЂРµСЃРѕР·РґР°С‘Рј FBO РµСЃР»Рё РЅСѓР¶РЅРѕ
-        // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+        // ---------------------------------------------------------═══════════════════════════════════════════════════════════════
+        // Проверяем, изменился ли размер Viewport, и пересоздаём FBO если нужно
+        // ---------------------------------------------------------═══════════════════════════════════════════════════════════════
         int vpWidth = (int)g_VpSize.x;
         int vpHeight = (int)g_VpSize.y;
         if (vpWidth > 0 && vpHeight > 0 && (vpWidth != g_VpLastWidth || vpHeight != g_VpLastHeight)) {
@@ -1917,51 +848,44 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
             g_VpLastHeight = vpHeight;
         }
 
-        bool sceneSafe = sceneMSFBO != 0 && sceneHDRFBO != 0 && sceneHDRTex != 0 && g_VpSize.x > 0 && g_VpSize.y > 0;
-        if (sceneSafe) {
-            glBindFramebuffer(GL_FRAMEBUFFER,sceneMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
-            renderScene(objects,sel,false,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,camera,vpAspect,gizmoMode,dragAxis,showSkybox,showGrid,showGizmos,gs,lights,sceneCameras,selLight,selCamera,selType);
-            glBindFramebuffer(GL_READ_FRAMEBUFFER,sceneMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,sceneHDRFBO);
-            glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
-            ApplyBloomAndTonemap(sceneHDRTex, sceneFBO, (int)g_VpSize.x, (int)g_VpSize.y);
-        } else {
-            glBindFramebuffer(GL_FRAMEBUFFER,0);
-            glViewport(0,0,(int)io.DisplaySize.x,(int)io.DisplaySize.y);
-            glClearColor(0.08f,0.10f,0.15f,1.0f);
-            glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-        }
+        g_pt0 = std::chrono::high_resolution_clock::now();
+        glBindFramebuffer(GL_FRAMEBUFFER,sceneMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
+        renderScene(objects,sel,false,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,camera,vpAspect,gizmoMode,dragAxis,showSkybox,showGrid,showGizmos,gs,lights,sceneCameras,selLight,selCamera,selType);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER,sceneMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,sceneHDRFBO);
+        glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        g_pt1 = std::chrono::high_resolution_clock::now();
+        ApplyBloomAndTonemap(sceneHDRTex, sceneFBO, (int)g_VpSize.x, (int)g_VpSize.y);
+        g_pt2 = std::chrono::high_resolution_clock::now();
+        // ── Своё же тело не должно быть видно от первого лица (как в Unity/Godot) ──
+        g_DrawCallCount = 0;
         int fpExcludeIdx=-1;
         for(auto& sc:sceneCameras){
             if(sc.isPrimary && sc.followTargetIndex>=0 && sc.followTargetIndex<(int)objects.size()){
+        g_msScene = std::chrono::duration<float, std::milli>(g_pt1-g_pt0).count();
+        g_msBloom = std::chrono::duration<float, std::milli>(g_pt2-g_pt1).count();
                 fpExcludeIdx=sc.followTargetIndex; break;
             }
         }
-        bool gameSafe = gameMSFBO != 0 && gameHDRFBO != 0 && gameHDRTex != 0 && g_VpSize.x > 0 && g_VpSize.y > 0;
-        if (gameSafe) {
-            glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
-            renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,vpAspect,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExcludeIdx);
-            glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO);
-            glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
-            ApplyBloomAndTonemap(gameHDRTex, gameFBO, (int)g_VpSize.x, (int)g_VpSize.y);
-        } else {
-            glBindFramebuffer(GL_FRAMEBUFFER,0);
-            glViewport(0,0,(int)io.DisplaySize.x,(int)io.DisplaySize.y);
-            glClearColor(0.08f,0.10f,0.15f,1.0f);
-            glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,(int)io.DisplaySize.x,(int)io.DisplaySize.y);
+        g_pt3 = std::chrono::high_resolution_clock::now();
+        glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
+        renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,vpAspect,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExcludeIdx);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO);
+        glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+        ApplyBloomAndTonemap(gameHDRTex, gameFBO, (int)g_VpSize.x, (int)g_VpSize.y);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,(int)io.DisplaySize.x,(int)io.DisplaySize.y); // restore full
+        auto t4 = std::chrono::high_resolution_clock::now();
+        g_msGame = std::chrono::duration<float, std::milli>(t4-g_pt3).count();
         glClearColor(0.08f,0.08f,0.09f,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
-    VE2D::RenderFrame(sprites2D, (int)g_VpSize.x, (int)g_VpSize.y);
+//    VE2D::RenderFrame(sprites2D, (int)g_VpSize.x, (int)g_VpSize.y);
         ImGui::NewFrame();
-    if (ImGui::IsKeyPressed(ImGuiKey_GraveAccent) || ImGui::IsKeyPressed(ImGuiKey_F1)) VE::Console::Get().Toggle();
         menuH=ImGui::GetFrameHeight();
 
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-//   Р’РР—РЈРђР›Р¬РќРђРЇ РўР•РњРђ вЂ” С‡С‘СЂРЅС‹Р№ + С„РёРѕР»РµС‚РѕРІС‹Р№ (Unity6/UE5)
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// ---------------------------------------------------------══════════════════════════════════════════════════════
+//   ВИЗУАЛЬНАЯ ТЕМА — чёрный + фиолетовый (Unity6/UE5)
+// ---------------------------------------------------------══════════════════════════════════════════════════════
 static bool themeApplied = false;
 if (!themeApplied) {
     themeApplied = true;
@@ -1984,7 +908,7 @@ if (!themeApplied) {
     st.GrabMinSize       = 6.f;
 
     ImVec4* c = st.Colors;
-    // в”Ђв”Ђ CONCEPT COLORS: #16181c base, #1e2024 panels, #2563eb accent в”Ђв”Ђ
+    // ── CONCEPT COLORS: #16181c base, #1e2024 panels, #2563eb accent ──
     // Backgrounds
     c[ImGuiCol_WindowBg]          = ImVec4(0.086f,0.094f,0.106f,1.f); // #161820
     c[ImGuiCol_ChildBg]           = ImVec4(0.086f,0.094f,0.106f,1.f);
@@ -2011,7 +935,7 @@ if (!themeApplied) {
     c[ImGuiCol_CheckMark]         = ImVec4(0.700f,0.720f,0.760f,1.f);
     c[ImGuiCol_SliderGrab]        = ImVec4(0.300f,0.320f,0.360f,1.f);
     c[ImGuiCol_SliderGrabActive]  = ImVec4(0.500f,0.520f,0.560f,1.f);
-    // Buttons вЂ” subtle, like concept
+    // Buttons — subtle, like concept
     c[ImGuiCol_Button]            = ImVec4(0.137f,0.149f,0.169f,1.f);
     c[ImGuiCol_ButtonHovered]     = ImVec4(0.180f,0.196f,0.220f,1.f);
     c[ImGuiCol_ButtonActive]      = ImVec4(0.200f,0.220f,0.250f,1.f);
@@ -2059,14 +983,14 @@ const ImVec4 COL_RED_X       = ImVec4(0.95f, 0.35f, 0.35f, 1.f);
 const ImVec4 COL_GREEN_Y     = ImVec4(0.35f, 0.90f, 0.40f, 1.f);
 const ImVec4 COL_BLUE_Z      = ImVec4(0.35f, 0.60f, 1.00f, 1.f);
 
-// в”Ђв”Ђ РҐРµР»РїРµСЂ вЂ” РіРѕСЂРёР·РѕРЅС‚Р°Р»СЊРЅР°СЏ Р»РёРЅРёСЏ СЃ РѕС‚СЃС‚СѓРїР°РјРё в”Ђв”Ђ
+// ── Хелпер — горизонтальная линия с отступами ──
 auto HRule = [&](){
     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.176f,0.188f,0.212f,1.f));
     ImGui::Separator();
     ImGui::PopStyleColor();
 };
 
-// в”Ђв”Ђ РҐРµР»РїРµСЂ вЂ” РєРЅРѕРїРєР°-РїРµСЂРµРєР»СЋС‡Р°С‚РµР»СЊ СЃ РїРѕРґСЃРІРµС‚РєРѕР№ Р°РєС†РµРЅС‚РѕРј в”Ђв”Ђ
+// ── Хелпер — кнопка-переключатель с подсветкой акцентом ──
 auto ToggleBtn = [&](const char* lbl, bool active, ImVec2 sz) -> bool {
     if (active) {
         ImGui::PushStyleColor(ImGuiCol_Button,        g_Prefs.accentColor);
@@ -2084,14 +1008,13 @@ auto ToggleBtn = [&](const char* lbl, bool active, ImVec2 sz) -> bool {
 
 if (!g_PlayerMode) {
 if (ImGui::BeginMainMenuBar()) {
-    // в”Ђв”Ђ Logo в”Ђв”Ђ
+    // ── Logo ──
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.88f,0.89f,0.92f,1.f));
     ImGui::Text("  VE  VisualEngine");
     ImGui::PopStyleColor();
     ImGui::SameLine(0, 8);
     ImGui::SameLine(0, 4);
     ImGui::TextColored(ImVec4(0.25f,0.25f,0.28f,1.f), "|");
-    ImGui::SameLine(0, 8);
 
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("New Scene",  "Ctrl+N")) logInfo("New scene");
@@ -2099,7 +1022,7 @@ if (ImGui::BeginMainMenuBar()) {
             std::string sp=projectRoot+"\\Assets\\Scenes\\scene.vescene";
             if(fs::exists(sp)){
                 LoadScene(sp,objects,lights,sceneCameras,sel,selType);
-                VE::UndoSystem::Get().Clear(); // РЅРѕРІР°СЏ СЃС†РµРЅР° вЂ” СЃС‚Р°СЂР°СЏ РёСЃС‚РѕСЂРёСЏ РѕС‚РјРµРЅС‹ Р±РѕР»СЊС€Рµ РЅРµ РІР°Р»РёРґРЅР°
+                VE::UndoSystem::Get().Clear(); // новая сцена — старая история отмены больше не валидна
                 currentScenePath=sp;
                 logInfo("Scene loaded: "+sp);
         g_SkipPropagate=true;
@@ -2116,7 +1039,16 @@ if (ImGui::BeginMainMenuBar()) {
             logInfo("Scene saved: "+currentScenePath);
         }
         ImGui::Separator();
-        
+        if (ImGui::MenuItem("Build & Export...")) {
+            if(currentScenePath.empty()){
+                currentScenePath=projectRoot+"\\Assets\\Scenes\\scene.vescene";
+                SaveScene(currentScenePath,objects,lights,sceneCameras);
+            }
+            bool ok = VE::BuildSystem::Get().Build(projectRoot, currentScenePath, "Game");
+            for(auto& line : VE::BuildSystem::Get().GetLog()) logInfo(line);
+            if(ok) logInfo(">>> Build complete! Check Build/ folder");
+            else   logError(">>> Build failed!");
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))       glfwSetWindowShouldClose(native, true);
         ImGui::EndMenu();
@@ -2172,9 +1104,19 @@ if (ImGui::BeginMainMenuBar()) {
         ImGui::MenuItem("Skybox",  nullptr, &showSkybox);
         ImGui::MenuItem("Grid",    nullptr, &showGrid);
         ImGui::MenuItem("Gizmos",  nullptr, &showGizmos);
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Shading")) {
+            ImGui::Checkbox("Bloom", &g_BloomEnabled);
+            ImGui::SliderFloat("Bloom threshold", &g_BloomThreshold, 0.1f, 3.0f);
+            ImGui::SliderFloat("Bloom strength", &g_BloomStrength, 0.0f, 1.5f);
+            ImGui::SliderFloat("Exposure", &g_Exposure, 0.2f, 3.0f);
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Tools")) {
+        if (ImGui::MenuItem("Material Editor", "Ctrl+M")) { extern bool showMaterialEditor; showMaterialEditor = !showMaterialEditor; }
+        if (ImGui::MenuItem("Shader Editor")) { extern bool showShaderEditor; showShaderEditor = !showShaderEditor; }
         if (ImGui::MenuItem("Script Editor","Ctrl+E")) logInfo("Use VS Code to edit scripts");
         ImGui::EndMenu();
     }
@@ -2183,7 +1125,7 @@ if (ImGui::BeginMainMenuBar()) {
         ImGui::EndMenu();
     }
 
-    // в”Ђв”Ђ Play / Pause / Stop РїРѕ С†РµРЅС‚СЂСѓ в”Ђв”Ђ
+    // ── Play / Pause / Stop по центру ──
     float mw = ImGui::GetWindowWidth();
     ImGui::SetCursorPosX(mw * 0.5f - 68.f);
 
@@ -2193,10 +1135,12 @@ if (ImGui::BeginMainMenuBar()) {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f,.35f,.35f,1.f));
         if (ImGui::Button(" \xe2\x96\xa0 Stop ", ImVec2(64,22))) {
             isPlaying=false; isPaused=false;
+        objects = g_PlaySnapshotObjs; lights = g_PlaySnapshotLights; sceneCameras = g_PlaySnapshotCams; sel=-1; selLight=-1; selCamera=-1; selType=SelectionType::None;
             if(g_MouseCaptured){ g_MouseCaptured=false; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL); }
             VE::Physics::Get().ClearAllBodies();
             VE::ParticleSystem::Get().Clear();
             VE::DebugDraw::Get().Clear();
+        VE::InstanceRenderer::Get().Clear();
             for(int i=0;i<(int)objects.size()&&i<(int)savedTransforms.size();i++){
                 objects[i].pos=savedTransforms[i].pos; objects[i].rot=savedTransforms[i].rot; objects[i].scale=savedTransforms[i].scale;
                 if(objects[i].hasRigidBody&&scene.registry.HasComponent<VE::RigidbodyComponent>(objects[i].ecsID)){
@@ -2206,7 +1150,7 @@ if (ImGui::BeginMainMenuBar()) {
                 tr.Position=objects[i].pos; tr.Rotation=objects[i].rot; tr.Scale=objects[i].scale;
             }
             for(auto& obj:objects){ obj.luaInstances.clear(); }
-            logInfo("Stop вЂ” scene restored");
+            logInfo("Stop — scene restored");
         g_SkipPropagate=true;
         for (auto& o : objects) {
             for (auto& n : g_CcNames) if (n==o.name && !scene.registry.HasComponent<VE::CharacterControllerComponent>(o.ecsID)) scene.registry.AddComponent<VE::CharacterControllerComponent>(o.ecsID);
@@ -2232,23 +1176,23 @@ if (ImGui::BeginMainMenuBar()) {
     if (ImGui::Button(" \xe2\x8f\xb8 ", ImVec2(28,22))) isPaused=!isPaused;
     ImGui::PopStyleColor(2);
 
-    // С‚Р°С‚РёСЃС‚РёРєР° СЃРїСЂР°РІР°
+    // татистика справа
     ImGui::SetCursorPosX(mw - 200.f);
     if (isPlaying) { ImGui::TextColored(COL_PLAY,"  \xe2\x97\x8f "); ImGui::SameLine(0,0); }
-    ImGui::TextColored(COL_DIM, "FPS:");
+            ImGui::SameLine();
+            char fpsBuf[256];
+            snprintf(fpsBuf, 256, "FPS: %.1f | DC: %d | Scene: %.1fms | Game: %.1fms | Bloom: %.1fms", io.Framerate, g_DrawCallCount, g_msScene, g_msGame, g_msBloom);
+            ImGui::TextColored(COL_DIM, "%s", fpsBuf);
     ImGui::SameLine(0,3);
-    ImGui::TextColored(COL_GREEN, "%.0f", io.Framerate);
     ImGui::SameLine(0,10);
-    ImGui::TextColored(COL_DIM, "ECS:");
     ImGui::SameLine(0,3);
-    ImGui::TextColored(COL_ACCENT_HOV, "%u", scene.EntityCount());
 
     ImGui::EndMainMenuBar();
 }
 
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-//   DOCKSPACE вЂ” РѕР±Р»Р°СЃС‚СЊ РґРѕРєРёРЅРіР° (Hierarchy/Viewport/Inspector/Bottom)
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// ---------------------------------------------------------══════════════════════════════════════════════════════
+//   DOCKSPACE — область докинга (Hierarchy/Viewport/Inspector/Bottom)
+// ---------------------------------------------------------══════════════════════════════════════════════════════
 static bool dockLayoutBuilt = false;
 ImGuiID dockspaceId = 0;
 {
@@ -2271,7 +1215,7 @@ ImGuiID dockspaceId = 0;
     ImGui::End();
     ImGui::PopStyleVar(3);
 
-    // в”Ђв”Ђ Р”РµС„РѕР»С‚РЅС‹Р№ layout СЃС‚СЂРѕРёС‚СЃСЏ РѕРґРёРЅ СЂР°Р· РїСЂРё РїРµСЂРІРѕРј Р·Р°РїСѓСЃРєРµ в”Ђв”Ђ
+    // ── Дефолтный layout строится один раз при первом запуске ──
     if (!dockLayoutBuilt) {
         dockLayoutBuilt = true;
         ImGui::DockBuilderRemoveNode(dockspaceId);
@@ -2293,9 +1237,9 @@ ImGuiID dockspaceId = 0;
     }
 }
 
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-//   PREFERENCES WINDOW вЂ” РєР°Рє Editor Settings РІ Godot
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+// ---------------------------------------------------------══════════════════════════════════════════════════════
+//   PREFERENCES WINDOW — как Editor Settings в Godot
+// ---------------------------------------------------------══════════════════════════════════════════════════════
 if (g_ShowPreferences) {
     static int prefCat = 0;
     ImGui::SetNextWindowSize(ImVec2(640,440), ImGuiCond_FirstUseEver);
@@ -2345,7 +1289,7 @@ if (g_ShowPreferences) {
     else if (prefCat==3) { // Shortcuts
         ImGui::TextColored(ImVec4(0.85f,0.85f,0.90f,1.f), "Shortcuts");
         ImGui::Separator(); ImGui::Spacing();
-        ImGui::TextColored(COL_DIM, "  Read-only for now вЂ” remapping coming later");
+        ImGui::TextColored(COL_DIM, "  Read-only for now — remapping coming later");
         ImGui::Spacing();
         struct SC{const char* action; const char* key;};
         static const SC scs[] = {
@@ -2373,12 +1317,12 @@ if (g_ShowPreferences) {
     ImGui::End();
 }
 
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-//   ENVIRONMENT WINDOW вЂ” РІСЂРµРјСЏ СЃСѓС‚РѕРє, РѕР±Р»Р°РєР°
-// ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ---------------------------------------------------------══════════════════════════════════════════════════════
+//   ENVIRONMENT WINDOW — время суток, облака
+// ---------------------------------------------------------══════════════════════════════════════════════════════
+// ───────────────────────────────────────────────────────
 //   TOOLBAR
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
 ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
 ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, toolH), ImGuiCond_Always);
 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8,4));
@@ -2386,11 +1330,11 @@ ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.086f,0.094f,0.106f,1.f));
 ImGui::PopStyleColor();
 ImGui::PopStyleVar();
 
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────
 //   SIDE ICON PANEL (like concept - left vertical bar)
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-// ── TOP ICON TOOLBAR (Blender-style) ──
+// ───────────────────────────────────────────────────────
+// -- TOP ICON TOOLBAR (Blender-style) --
 ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
 ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, toolH), ImGuiCond_Always);
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.094f,0.102f,0.114f,1.f));
@@ -2472,7 +1416,7 @@ ImGui::PopStyleVar(2);
 ImGui::PopStyleColor();
 
 //   HIERARCHY
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.086f,0.094f,0.106f,1.f));
 const char* leftPanelTitle = "Hierarchy";
 ImGui::Begin("Hierarchy##leftpanel", nullptr, ImGuiWindowFlags_NoCollapse);
@@ -2488,7 +1432,7 @@ ImGui::Separator();
 
 if (g_SideTab == 0) { // HIERARCHY
 
-// РџРѕРёСЃРє + РєРЅРѕРїРєР° РґРѕР±Р°РІРёС‚СЊ
+// Поиск + кнопка добавить
 ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f,0.11f,0.12f,1.f));
 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 4);
 ImGui::InputTextWithHint("##hs", "Search...", hierSearch, sizeof(hierSearch));
@@ -2533,7 +1477,7 @@ if (ImGui::BeginPopup("##addobj")) {
     ImGui::EndPopup();
 }
 
-// ── ПКМ контекстное меню как в Unity ──
+// -- ��� ����������� ���� ��� � Unity --
 if (ImGui::BeginPopup("##hierctx")) {
     bool hasSel = (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size())
                || (selType==SelectionType::Light && selLight>=0 && selLight<(int)lights.size())
@@ -2598,7 +1542,7 @@ if (ImGui::BeginPopup("##hierctx")) {
 }
 HRule();
 
-// С†РµРЅР° РґРµСЂРµРІРѕ
+// цена дерево
 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
 ImGui::PushStyleColor(ImGuiCol_Text, COL_ACCENT_HOV);
 bool sceneOpen = ImGui::TreeNodeEx("  Untitled Scene", ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_DefaultOpen);
@@ -2616,7 +1560,7 @@ if (ImGui::BeginDragDropTarget()) {
 ImGui::PopStyleColor();
 
 if (sceneOpen) {
-    // в”Ђв”Ђ Lighting вЂ” РєР°Рє СЃРµСЂРІРёСЃ РІ Roblox: РїРѕСЃС‚РѕСЏРЅРЅС‹Р№ РїСѓРЅРєС‚, РЅРµ РѕР±СЉРµРєС‚ СЃС†РµРЅС‹ в”Ђв”Ђ
+    // ── Lighting — как сервис в Roblox: постоянный пункт, не объект сцены ──
     {
         bool isEnvSel = (selType == SelectionType::Environment);
         ImGui::PushStyleColor(ImGuiCol_Text, isEnvSel ? ImVec4(1,1,1,1) : ImVec4(1.0f,0.85f,0.4f,1.f));
@@ -2650,7 +1594,7 @@ if (sceneOpen) {
         else if (obj.type==PrimitiveType::Empty) labelColor = ImVec4(0.5f,0.5f,0.55f,1.f); // gray
         if (obj.name.rfind("Folder_",0)==0) labelColor = ImVec4(0.93f,0.79f,0.42f,1.f);
         ImGui::PushStyleColor(ImGuiCol_Text, labelColor);
-        std::string label = "  " + obj.name;
+        std::string label = "  " + obj.name + "##h" + std::to_string(i);
         ImGui::PopStyleColor();
         bool nodeOpen = hasChildren ? ImGui::TreeNodeEx(label.c_str(), flags) : (ImGui::TreeNodeEx(label.c_str(), flags), false);
 
@@ -2660,7 +1604,7 @@ if (sceneOpen) {
         if (ImGui::IsItemClicked(1)) { sel=i; selType=SelectionType::Object; ImGui::OpenPopup("##hierctx"); }
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) { ImGui::SetDragDropPayload("HIER_OBJ", &i, sizeof(int)); ImGui::TextUnformatted(obj.name.c_str()); ImGui::EndDragDropSource(); }
 
-        // в”Ђв”Ђ Drop target: РїРµСЂРµС‚Р°С‰Рё .mat РїСЂСЏРјРѕ РЅР° РѕР±СЉРµРєС‚ РІ Hierarchy в”Ђв”Ђ
+        // ── Drop target: перетащи .mat прямо на объект в Hierarchy ──
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MATERIAL_PATH")) {
                 std::string matPath((const char*)payload->Data, payload->DataSize-1);
@@ -2758,7 +1702,7 @@ if (sceneOpen) {
             if (objects[c].parentIndex!=i) continue;
             bool cSel=(selType==SelectionType::Object&&c==sel);
             if (cSel) { ImGui::PushStyleColor(ImGuiCol_Header,ImVec4(0.16f,0.17f,0.20f,1.f)); ImGui::PushStyleColor(ImGuiCol_HeaderHovered,ImVec4(0.22f,0.23f,0.26f,1.f)); }
-            ImGui::TreeNodeEx(("  "+objects[c].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(cSel?ImGuiTreeNodeFlags_Selected:0));
+            ImGui::TreeNodeEx(("  "+objects[c].name+"##h"+std::to_string(c)).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(cSel?ImGuiTreeNodeFlags_Selected:0));
             if (cSel) ImGui::PopStyleColor(2);
             if (ImGui::IsItemClicked()) { sel=c; selType=SelectionType::Object; }
             if (ImGui::IsMouseDoubleClicked(0) && ImGui::IsItemHovered()) { objects[c].parentIndex=-1; logInfo("Unparented "+objects[c].name); }
@@ -2768,7 +1712,7 @@ if (sceneOpen) {
             if (sceneCameras[c].followTargetIndex!=i) continue;
             bool cSel=(selType==SelectionType::Camera&&c==selCamera);
             ImGui::PushStyleColor(ImGuiCol_Text, COL_CAM_OBJ);
-            ImGui::TreeNodeEx(("  "+sceneCameras[c].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(cSel?ImGuiTreeNodeFlags_Selected:0));
+            ImGui::TreeNodeEx(("  "+sceneCameras[c].name+"##h"+std::to_string(c)).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(cSel?ImGuiTreeNodeFlags_Selected:0));
             ImGui::PopStyleColor(1);
             if (ImGui::IsItemClicked()) { selCamera=c; selType=SelectionType::Camera; }
             if (ImGui::IsMouseDoubleClicked(0) && ImGui::IsItemHovered()) { sceneCameras[c].followTargetIndex=-1; logInfo("Camera detached: "+sceneCameras[c].name); }
@@ -2786,7 +1730,7 @@ if (sceneOpen) {
         ImGuiTreeNodeFlags flags=ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if(selType==SelectionType::Light&&i==selLight) flags|=ImGuiTreeNodeFlags_Selected;
         ImGui::PushStyleColor(ImGuiCol_Text, COL_LIGHT_OBJ);
-        ImGui::TreeNodeEx(("  "+lights[i].name).c_str(), flags);
+        ImGui::TreeNodeEx(("  "+lights[i].name+"##h"+std::to_string(i)).c_str(), flags);
         ImGui::PopStyleColor();
         if(ImGui::IsItemClicked()){selLight=i;selType=SelectionType::Light;}
     }
@@ -2796,7 +1740,7 @@ if (sceneOpen) {
         ImGuiTreeNodeFlags flags=ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if(selType==SelectionType::Camera&&i==selCamera) flags|=ImGuiTreeNodeFlags_Selected;
         ImGui::PushStyleColor(ImGuiCol_Text, COL_CAM_OBJ);
-        ImGui::TreeNodeEx(("  "+sceneCameras[i].name).c_str(), flags);
+        ImGui::TreeNodeEx(("  "+sceneCameras[i].name+"##h"+std::to_string(i)).c_str(), flags);
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) { ImGui::SetDragDropPayload("HIER_CAM", &i, sizeof(int)); ImGui::TextUnformatted(sceneCameras[i].name.c_str()); ImGui::EndDragDropSource(); }
         ImGui::PopStyleColor();
         if(ImGui::IsItemClicked()){selCamera=i;selType=SelectionType::Camera;}
@@ -2804,7 +1748,7 @@ if (sceneOpen) {
     ImGui::TreePop();
 
     static bool s_uiNodeHover=false; s_uiNodeHover=false;
-    // ── Canvas (UI) — как в Unity ──
+    // -- Canvas (UI) � ��� � Unity --
     {
         bool canOpen = ImGui::TreeNodeEx("  Canvas", ImGuiTreeNodeFlags_DefaultOpen|ImGuiTreeNodeFlags_SpanAvailWidth|ImGuiTreeNodeFlags_NoTreePushOnOpen);
         if (canOpen) {
@@ -2812,7 +1756,7 @@ if (sceneOpen) {
             for (int i2=0;i2<(int)uiElements.size();i2++) {
                 bool s2=(selUI==i2);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f,0.5f,0.8f,1.f));
-                ImGui::TreeNodeEx(("  "+uiElements[i2].name).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(s2?ImGuiTreeNodeFlags_Selected:0));
+                ImGui::TreeNodeEx(("  "+uiElements[i2].name+"##h"+std::to_string(i2)).c_str(), ImGuiTreeNodeFlags_Leaf|ImGuiTreeNodeFlags_NoTreePushOnOpen|ImGuiTreeNodeFlags_SpanAvailWidth|(s2?ImGuiTreeNodeFlags_Selected:0));
                 ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) s_uiNodeHover=true;
                 if (ImGui::IsItemClicked()) { selUI=i2; selSprite2D=-1; sel=-1; selType=SelectionType::None; }
@@ -2850,7 +1794,7 @@ if (sceneOpen) {
                 ImGui::Unindent(16.f);
             }
         }
-        // ── 2D Sprites ──
+        // -- 2D Sprites --
     for (int i2=0;i2<(int)sprites2D.size();i2++) {
         bool s2=(selSprite2D==i2);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f,0.9f,0.9f,1.f));
@@ -2864,9 +1808,9 @@ if (sceneOpen) {
 ImGui::End();
 ImGui::PopStyleColor();
 
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
 //   VIEWPORT
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
 ImGui::PushStyleColor(ImGuiCol_WindowBg,    ImVec4(0.071f,0.078f,0.090f,1.f));
 ImGui::PushStyleColor(ImGuiCol_Tab,         ImVec4(0.08f,0.09f,0.10f,1.f));
@@ -2880,14 +1824,14 @@ if (ImGui::BeginTabBar("##vptabs")) {
     if (ImGui::BeginTabItem("  Scene")) {
         float tw=ImGui::GetContentRegionAvail().x, th=ImGui::GetContentRegionAvail().y;
         g_VpPos=ImGui::GetCursorScreenPos(); g_VpSize=ImVec2(tw,th);
-        // РµРїРµСЂСЊ FBO РґРёРЅР°РјРёС‡РµСЃРєРё РјР°СЃС€С‚Р°Р±РёСЂСѓРµС‚СЃСЏ РїРѕРґ СЂР°Р·РјРµСЂ ImGui РѕРєРЅР°,
-        // РїРѕСЌС‚РѕРјСѓ UV РІСЃРµРіРґР° (0,1)-(1,0) РґР»СЏ РїРѕР»РЅРѕРіРѕ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ С‚РµРєСЃС‚СѓСЂС‹
+        // еперь FBO динамически масштабируется под размер ImGui окна,
+        // поэтому UV всегда (0,1)-(1,0) для полного отображения текстуры
         ImGui::Image((ImTextureID)(intptr_t)sceneTex, ImVec2(tw,th), ImVec2(0,1), ImVec2(1,0));
         { ImVec2 gmin=ImGui::GetItemRectMin(); ImVec2 gsz=ImGui::GetItemRectSize(); VEUI::Draw(uiElements, gmin, gsz, true, &selUI); if (VEUI::clickedElement) { sel=-1; selCamera=-1; selLight=-1; selSprite2D=-1; selType=SelectionType::None; } }
 
-        // в”Ђв”Ђ Drop target: raycast-based material drop (like Godot/Unity) в”Ђв”Ђ
+        // ── Drop target: raycast-based material drop (like Godot/Unity) ──
         if (ImGui::BeginDragDropTarget()) {
-            // Р’Рѕ РІСЂРµРјСЏ hover вЂ” РїРѕРґСЃРІРµС‡РёРІР°РµРј РѕР±СЉРµРєС‚ РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј
+            // Во время hover — подсвечиваем объект под курсором
             ImVec2 mp = ImGui::GetIO().MousePos;
             double lx = mp.x - g_VpPos.x;
             double ly = mp.y - g_VpPos.y;
@@ -2906,7 +1850,7 @@ if (ImGui::BeginTabBar("##vptabs")) {
 
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("MATERIAL_PATH")) {
                 std::string matPath((const char*)payload->Data, payload->DataSize-1);
-                // РџСЂРёРјРµРЅСЏРµРј Рє РѕР±СЉРµРєС‚Сѓ РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј, РёР»Рё Рє РІС‹Р±СЂР°РЅРЅРѕРјСѓ РµСЃР»Рё РЅРµС‚ РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј
+                // Применяем к объекту под курсором, или к выбранному если нет под курсором
                 int targetObj = (g_DragHoverObj >= 0) ? g_DragHoverObj
                               : (selType==SelectionType::Object && sel>=0) ? sel : -1;
                 if (targetObj >= 0 && targetObj < (int)objects.size()) {
@@ -2945,17 +1889,17 @@ if (ImGui::BeginTabBar("##vptabs")) {
             ImGui::EndDragDropTarget();
         }
 
-        // РџРѕРґСЃРІРµС‚РєР° РѕР±СЉРµРєС‚Р° РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј РІРѕ РІСЂРµРјСЏ drag&drop
+        // Подсветка объекта под курсором во время drag&drop
         if (g_DragHoverObj >= 0 && g_DragHoverObj < (int)objects.size()) {
             auto* dndDl = ImGui::GetWindowDrawList();
-            // Р РёСЃСѓРµРј РїСѓР»СЊСЃРёСЂСѓСЋС‰РёР№ РєРѕРЅС‚СѓСЂ РІРѕРєСЂСѓРі РЅР°Р·РІР°РЅРёСЏ РѕР±СЉРµРєС‚Р°
+            // Рисуем пульсирующий контур вокруг названия объекта
             ImVec2 hintPos = ImVec2(g_VpPos.x + 8, g_VpPos.y + 8);
             dndDl->AddText(hintPos, IM_COL32(255,200,80,220),
                 ("Drop material on: "+objects[g_DragHoverObj].name).c_str());
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-            // GetMouseDragDelta РєРѕСЂСЂРµРєС‚РЅРѕ СЂР°Р±РѕС‚Р°РµС‚ Рё РЅР° РєР°РґСЂРµ РѕС‚РїСѓСЃРєР°РЅРёСЏ РєРЅРѕРїРєРё
-            // (РІ РѕС‚Р»РёС‡РёРµ РѕС‚ IsMouseDragging, РєРѕС‚РѕСЂР°СЏ С‚СЂРµР±СѓРµС‚, С‡С‚РѕР±С‹ РєРЅРѕРїРєР° РµС‰С‘ Р±С‹Р»Р° Р·Р°Р¶Р°С‚Р°)
+            // GetMouseDragDelta корректно работает и на кадре отпускания кнопки
+            // (в отличие от IsMouseDragging, которая требует, чтобы кнопка ещё была зажата)
             ImVec2 dragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right, 5.0f);
             if (dragDelta.x == 0.0f && dragDelta.y == 0.0f)
                 ImGui::OpenPopup("##scene_ctx");
@@ -3051,7 +1995,7 @@ if (ImGui::BeginTabBar("##vptabs")) {
                 }
             }
 
-            // в”Ђв”Ђ "Save as Prefab" popup в”Ђв”Ђ
+            // ── "Save as Prefab" popup ──
             if (ImGui::BeginPopupModal("##save_prefab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::Text("Prefab name:");
                 ImGui::SetNextItemWidth(300);
@@ -3106,8 +2050,8 @@ if (ImGui::BeginTabBar("##vptabs")) {
     if (ImGui::BeginTabItem("  Game")) {
         if (gameTex) {
             ImVec2 vp = ImGui::GetContentRegionAvail();
-            ImVec2 uv0(0,1), uv1(1,0);
-            ImGui::Image((ImTextureID)(intptr_t)gameTex, vp, uv0, uv1);
+            ImVec2 uv0(0,0), uv1(1,1);
+            ImGui::Image((ImTextureID)(intptr_t)gameTex, vp, ImVec2(0,1), ImVec2(1,0));
             ImVec2 gmin=ImGui::GetItemRectMin(); ImVec2 gsz=ImGui::GetItemRectSize();
             VEUI::Draw(uiElements, gmin, gsz, false, nullptr);
             if (VEUI::clickedThisFrame>=0 && VEUI::clickedThisFrame<(int)uiElements.size()) {
@@ -3138,11 +2082,12 @@ if (ImGui::BeginTabBar("##vptabs")) {
         ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
+}
 ImGui::End();
 ImGui::PopStyleColor(4); ImGui::PopStyleVar();
-// ──────────────────────────────────────────────────────────────────────────────
+// ------------------------------------------------------------------------------
 //   INSPECTOR
-// ──────────────────────────────────────────────────────────────────────────────
+// ------------------------------------------------------------------------------
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.078f,0.086f,0.098f,1.f));
 ImGui::Begin("Inspector##inspector", nullptr, ImGuiWindowFlags_NoCollapse);
 
@@ -3159,6 +2104,32 @@ if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
     ImGui::Checkbox("Active", &obj.active);
     ImGui::Separator();
     static bool s_wantNewScript=false;
+            if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
+                ImGui::TextDisabled("Scripts (%d):", (int)objects[sel].scripts.size());
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f,0.16f,0.19f,1.f));
+                ImGui::BeginChild("##scriptsBox", ImVec2(-1, 70), true);
+                for (int si=0; si<(int)objects[sel].scripts.size(); si++) {
+                    std::string nm = objects[sel].scripts[si];
+                    size_t posA = nm.find("Assets"); if (posA!=std::string::npos) nm = nm.substr(posA);
+                    size_t fs2 = nm.find_last_of("/\\"); std::string dn = (fs2!=std::string::npos)? nm.substr(fs2+1) : nm;
+                    ImGui::TextColored(ImVec4(0.6f,1.f,0.6f,1.f), " %s", dn.c_str());
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton(("X##scrx"+std::to_string(si)).c_str())) { objects[sel].scripts.erase(objects[sel].scripts.begin()+si); si--; }
+                    ImGui::Separator();
+                }
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pay = ImGui::AcceptDragDropPayload("SCRIPT_PATH")) {
+                        const char* p = (const char*)pay->Data;
+                        std::string sp = p;
+                        bool dup=false; for (auto& s2 : objects[sel].scripts) if (s2==sp) dup=true;
+                        if (!dup) objects[sel].scripts.push_back(sp);
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                ImGui::TextDisabled("drag .lua from Project (can drop several)");
+            }
     if (ImGui::Button("Add Module", ImVec2(-1,0))) ImGui::OpenPopup("##add_comp");
 for (size_t si=0; si<obj.scriptPaths.size(); si++) {
     std::string fn = fs::path(obj.scriptPaths[si]).filename().string();
@@ -3267,6 +2238,7 @@ ImGui::PopStyleColor();
     ImGui::TextColored(ImVec4(.3f,1.f,.5f,1.f), "%s (Camera)", cam.name.c_str());
     ImGui::Separator();
     ImGui::DragFloat3("Position", &cam.pos.x, 0.05f);
+    ImGui::DragFloat3("Rotation", &cam.rot.x, 0.5f);
     ImGui::DragFloat("FOV", &cam.fov, 0.5f, 10.f, 120.f);
     ImGui::Checkbox("Primary", &cam.isPrimary);
 } else if (selUI>=0 && selUI<(int)uiElements.size()) {
@@ -3355,15 +2327,204 @@ ImGui::End();
 ImGui::PopStyleColor();
 
 
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
 //   BOTTOM PANEL (Console / Project / Animation)
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ───────────────────────────────────────────────────────
 ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.078f,0.086f,0.098f,1.f));
 ImGui::Begin("Bottom##bottom", nullptr, ImGuiWindowFlags_NoCollapse);
 
 if (ImGui::BeginTabBar("##btabs")) {
-    // в”Ђв”Ђ Console в”Ђв”Ђ
-
+    // ── Console ──
+if (ImGui::BeginTabItem("  Console")) {
+    static bool s_Collapse=false;
+    static bool s_ShowInfo=true, s_ShowWarn=true, s_ShowErr=true;
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f,0.15f,0.17f,1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f,0.26f,0.30f,1.f));
+    if (ImGui::SmallButton(" Clear ")) consoleLog.clear();
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine(0,8);
+    ImGui::Checkbox("Collapse", &s_Collapse);
+    ImGui::SameLine(0,16);
+    float logH = ImGui::GetContentRegionAvail().y - 28.f;
+    if (ImGui::BeginChild("##clog", ImVec2(-1, logH))) {
+        for (size_t i=0;i<consoleLog.size();i++) {
+            auto& e = consoleLog[i];
+            bool show = (e.level==2)?s_ShowErr:(e.level==1)?s_ShowWarn:s_ShowInfo;
+            if (!show) continue;
+            int run=1;
+            if (s_Collapse) {
+                if (i>0 && consoleLog[i-1].msg==e.msg && consoleLog[i-1].level==e.level) continue;
+                for (size_t j=i+1;j<consoleLog.size() && consoleLog[j].msg==e.msg && consoleLog[j].level==e.level;j++) run++;
+            }
+            ImVec4 col = e.level==2 ? ImVec4(1.f,.35f,.35f,1.f)
+                       : e.level==1 ? ImVec4(1.f,.80f,.25f,1.f)
+                       : e.level==3 ? ImVec4(0.55f,0.90f,1.f,1.f)
+                       :              ImVec4(.78f,.75f,.88f,1.f);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 ic(p.x+8, p.y+ImGui::GetTextLineHeight()*0.5f+1);
+            ImU32 icCol = e.level==2?IM_COL32(220,60,60,255):e.level==1?IM_COL32(230,180,40,255):IM_COL32(80,160,220,255);
+            dl->AddCircleFilled(ic, 6.f, icCol, 16);
+            const char* ch = e.level==2?"x":e.level==1?"!":"i";
+            ImVec2 ts = ImGui::CalcTextSize(ch);
+            dl->AddText(ImVec2(ic.x-ts.x*0.5f, ic.y-ts.y*0.5f), IM_COL32(255,255,255,255), ch);
+            ImGui::Dummy(ImVec2(20,0));
+            ImGui::SameLine(0,0);
+            if (run>1) ImGui::TextColored(col, "%s  (x%d)", e.msg.c_str(), run);
+            else       ImGui::TextColored(col, "%s", e.msg.c_str());
+        }
+        if (ImGui::GetScrollY()>=ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.f);
+    }
+    ImGui::EndChild();
+    HRule();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f,0.09f,0.11f,1.f));
+    ImGui::TextColored(ImVec4(0.50f,0.52f,0.58f,1.f), ">");
+    ImGui::SameLine(0,4);
+    ImGui::PushItemWidth(-60.f);
+    bool enterPressed = false;
+    struct CmdCallback {
+        static int cb(ImGuiInputTextCallbackData* d) {
+            if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
+                if (g_CmdHistory.empty()) return 0;
+                if (d->EventKey == ImGuiKey_UpArrow) { if (g_CmdHistoryIdx < (int)g_CmdHistory.size()-1) g_CmdHistoryIdx++; }
+                else if (d->EventKey == ImGuiKey_DownArrow) { if (g_CmdHistoryIdx > -1) g_CmdHistoryIdx--; }
+                std::string val = g_CmdHistoryIdx >= 0 ? g_CmdHistory[g_CmdHistoryIdx] : "";
+                d->DeleteChars(0, d->BufTextLen);
+                d->InsertChars(0, val.c_str());
+            }
+            return 0;
+        }
+    };
+    if (g_ConsoleFocusInput) { ImGui::SetKeyboardFocusHere(); g_ConsoleFocusInput=false; }
+    if (ImGui::InputTextWithHint("##cmd", "help", g_CmdBuf, sizeof(g_CmdBuf),
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory,
+        CmdCallback::cb)) {
+        enterPressed = true;
+    }
+    ImGui::PopItemWidth();
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0,4);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f,0.17f,0.20f,1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.42f,0.44f,0.48f,1.f));
+    if (ImGui::Button("Run", ImVec2(56,0))) enterPressed = true;
+    ImGui::PopStyleColor(2);
+    if (enterPressed && g_CmdBuf[0] != '\0') {
+        std::string cmd = g_CmdBuf;
+        consoleLog.push_back({cmd, 3});
+        g_CmdHistory.insert(g_CmdHistory.begin(), cmd);
+        if (g_CmdHistory.size() > 50) g_CmdHistory.pop_back();
+        g_CmdHistoryIdx = -1;
+        memset(g_CmdBuf, 0, sizeof(g_CmdBuf));
+        g_ConsoleFocusInput = true;
+        std::istringstream ss(cmd);
+        std::string token; std::vector<std::string> args;
+        while (ss >> token) args.push_back(token);
+        std::string c = args.empty() ? "" : args[0];
+        if (c=="help") {
+            logInfo("Commands: help, clear, echo, fps, ls, mkdir, list objects|lights,");
+            logInfo("  select <name>, create <type>, move/scale <name> x y z,");
+            logInfo("  rename <n>, color r g b, delete <name>, spawn <type>,");
+            logInfo("  volume <0..1>, play <path>, time/sun/ambient <v>,");
+logInfo("  fog <d> [r g b], bloom <t> [s]|on|off, exposure <v>, skybox/grid on|off");
+            logInfo("  scene save|load <path>|reload|current");
+        }
+        else if (c=="clear") consoleLog.clear();
+        else if (c=="echo") { std::string out; for(size_t i=1;i<args.size();i++) out+=args[i]+" "; logInfo(out); }
+        else if (c=="fps") logInfo("FPS: "+std::to_string((int)io.Framerate));
+        else if (c=="mkdir" && args.size()>=2) {
+            try { fs::path p=args[1]; if(p.is_relative()) p=fs::path(projectRoot)/p; fs::create_directories(p); logInfo("Created: "+p.string()); } catch(const std::exception& ex){ logError(ex.what()); }
+        }
+        else if (c=="ls"||c=="dir") {
+            fs::path p = args.size()>=2 ? fs::path(args[1]) : fs::path(assetCurrentPath);
+            if (p.is_relative()) p = fs::path(projectRoot)/p;
+            try { for (auto& e : fs::directory_iterator(p)) logInfo(std::string(e.is_directory()?"[dir] ":"     ")+e.path().filename().string()); } catch(...){ logError("Folder not found: "+p.string()); }
+        }
+        else if (c=="list" && args.size()>=2 && args[1]=="objects") { for(size_t i=0;i<objects.size();i++) logInfo("["+std::to_string(i)+"] "+objects[i].name); }
+        else if (c=="list" && args.size()>=2 && args[1]=="lights") { for(size_t i=0;i<lights.size();i++) logInfo("["+std::to_string(i)+"] "+lights[i].name); }
+        else if (c=="select" && args.size()>=2) {
+            bool f=false;
+            for(int i=0;i<(int)objects.size();i++) if(objects[i].name==args[1]){sel=i;selType=SelectionType::Object;f=true;logInfo("Selected: "+objects[i].name);break;}
+            if(!f) logWarn("Object not found: "+args[1]);
+        }
+        else if (c=="create" && args.size()>=2) {
+            std::string t=args[1];
+            const char* tn[]={"cube","sphere","cylinder","pyramid","capsule","plane","model","empty"};
+            bool done=false;
+            for(int ti=0;ti<8;ti++){ if(t==tn[ti]){ addObject(objects,(PrimitiveType)ti,sel,selType); done=true; break; } }
+            if(!done) logInfo("Unknown type: "+t);
+        }
+        else if (c=="move" && args.size()>=5) {
+            bool f=false;
+            for(auto& o : objects){ if(o.name==args[1]){ o.pos=glm::vec3(std::stof(args[2]),std::stof(args[3]),std::stof(args[4])); logInfo("Moved: "+o.name); f=true; break; } }
+            if(!f) logInfo("Not found: "+args[1]);
+        }
+        else if (c=="move" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
+            objects[sel].pos={std::stof(args[1]),std::stof(args[2]),std::stof(args[3])};
+            logInfo("Moved: "+objects[sel].name);
+        }
+        else if (c=="scale" && args.size()>=5) {
+            bool f=false;
+            for(auto& o : objects){ if(o.name==args[1]){ o.scale=glm::vec3(std::stof(args[2]),std::stof(args[3]),std::stof(args[4])); logInfo("Scaled: "+o.name); f=true; break; } }
+            if(!f) logInfo("Not found: "+args[1]);
+        }
+        else if (c=="scale" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
+            objects[sel].scale=glm::vec3(std::stof(args[1]),std::stof(args[2]),std::stof(args[3]));
+            logInfo("Scaled: "+objects[sel].name);
+        }
+        else if (c=="rename" && args.size()>=3 && selType==SelectionType::Object && sel>=0) {
+            std::string oldName = objects[sel].name;
+            objects[sel].name = args[1];
+            logInfo("Renamed: "+oldName+" -> "+args[1]);
+        }
+        else if (c=="color" && args.size()>=4 && selType==SelectionType::Object && sel>=0) {
+            objects[sel].color={std::stof(args[1]),std::stof(args[2]),std::stof(args[3])};
+            logInfo("Color changed: "+objects[sel].name);
+        }
+        else if (c=="delete" && args.size()>=2) {
+            bool done=false;
+            for (int i=0;i<(int)objects.size() && !done;i++) if (objects[i].name==args[1]) { logInfo("Deleted: "+objects[i].name); if(sel==i){sel=-1;selType=SelectionType::None;} objects.erase(objects.begin()+i); done=true; selUI=-1; selSprite2D=-1; }
+            for (int i=0;i<(int)lights.size() && !done;i++) if (lights[i].name==args[1]) { logInfo("Deleted: "+lights[i].name); if(selLight==i)selLight=-1; lights.erase(lights.begin()+i); done=true; }
+            for (int i=0;i<(int)sceneCameras.size() && !done;i++) if (sceneCameras[i].name==args[1]) { logInfo("Deleted: "+sceneCameras[i].name); if(selCamera==i)selCamera=-1; sceneCameras.erase(sceneCameras.begin()+i); done=true; }
+            if(!done) logInfo("Not found: "+args[1]);
+        }
+        else if (c=="spawn" && args.size()>=2) {
+            PrimitiveType pt=PrimitiveType::Cube;
+            if(args[1]=="sphere")pt=PrimitiveType::Sphere;
+            else if(args[1]=="plane")pt=PrimitiveType::Plane;
+            else if(args[1]=="cylinder")pt=PrimitiveType::Cylinder;
+            else if(args[1]=="capsule")pt=PrimitiveType::Capsule;
+            else if(args[1]=="pyramid")pt=PrimitiveType::Pyramid;
+            SceneObject o; o.name=args.size()>=3?args[2]:(args[1]+"_"+std::to_string(objects.size()+1));
+            o.type=pt; o.pos={0,0.5f,0}; o.color={0.8f,0.6f,0.3f};
+            o.ecsID=scene.CreateEntity(o.name);
+            scene.GetTransform(o.ecsID).Position=o.pos;
+            scene.registry.AddComponent<VE::MeshComponent>(o.ecsID,VE::Mesh{},o.color);
+            objects.push_back(o); sel=(int)objects.size()-1; selType=SelectionType::Object;
+            logInfo("Spawned: "+o.name);
+        }
+        else if (c=="volume" && args.size()>=2) { VE::AudioEngine::Get().SetMasterVolume(std::stof(args[1])); logInfo("Volume: "+args[1]); }
+        else if (c=="play" && args.size()>=2) { VE::AudioEngine::Get().PlaySound(args[1]); logInfo("Playing: "+args[1]); }
+        else if (c=="time" && args.size()>=2) { g_TimeOfDay=std::stof(args[1]); logInfo("Time of day: "+args[1]); }
+        else if (c=="sun" && args.size()>=2) { g_SunIntensity=std::stof(args[1]); logInfo("Sun intensity: "+args[1]); }
+        else if (c=="ambient" && args.size()>=2) { g_AmbientStrength=std::stof(args[1]); logInfo("Ambient: "+args[1]); }
+        // ── Graphics console commands: fog / bloom / exposure / skybox / grid ──
+        else if (c=="fog" && args.size()>=2) { extern float g_FogDensity; extern glm::vec3 g_FogColor; g_FogDensity=std::stof(args[1]); if(args.size()>=5){ g_FogColor.x=std::stof(args[2]); g_FogColor.y=std::stof(args[3]); g_FogColor.z=std::stof(args[4]); } logInfo("Fog: density "+args[1]); }
+        else if (c=="bloom" && args.size()>=2) { if(args[1]=="on"){g_BloomEnabled=true; logInfo("Bloom: ON");} else if(args[1]=="off"){g_BloomEnabled=false; logInfo("Bloom: OFF");} else { g_BloomThreshold=std::stof(args[1]); if(args.size()>=3) g_BloomStrength=std::stof(args[2]); logInfo("Bloom: threshold "+args[1]); } }
+        else if (c=="exposure" && args.size()>=2) { g_Exposure=std::stof(args[1]); logInfo("Exposure: "+args[1]); }
+        else if (c=="skybox" && args.size()>=2) { showSkybox=(args[1]=="on"||args[1]=="1"); logInfo(std::string("Skybox: ")+(showSkybox?"ON":"OFF")); }
+        else if (c=="grid" && args.size()>=2) { showGrid=(args[1]=="on"||args[1]=="1"); logInfo(std::string("Grid: ")+(showGrid?"ON":"OFF")); }
+        else if (c=="scene" && args.size()>=2 && args[1]=="save") {
+            if(currentScenePath.empty()) currentScenePath=projectRoot+"\\Assets\\Scenes\\scene.vescene";
+            SaveScene(currentScenePath,objects,lights,sceneCameras);
+            logInfo("Scene saved: "+currentScenePath);
+        }
+        else if (c=="scene" && args.size()>=3 && args[1]=="load") { VE::SceneManager::Get().RequestLoad(args[2]); logInfo("Loading scene: "+args[2]); }
+        else if (c=="scene" && args.size()>=2 && args[1]=="reload") { VE::SceneManager::Get().RequestReload(); logInfo("Reloading scene..."); }
+        else if (c=="scene" && args.size()>=2 && args[1]=="current") { logInfo("Current: "+VE::SceneManager::Get().GetCurrent()); }
+        else logWarn("Unknown command: "+c+" (type 'help')");
+    }
+    ImGui::EndTabItem();
+}
  if (ImGui::BeginTabItem("  Project")) {
         if (!g_DroppedFiles.empty()) {
             for (auto& srcPath : g_DroppedFiles) {
@@ -3381,7 +2542,7 @@ if (ImGui::BeginTabBar("##btabs")) {
         static bool s_wantCreateScript=false;
         static bool s_wantProjCtx=false;
 
-        // в”Ђв”Ђ LEFT: folder tree в”Ђв”Ђ
+        // ── LEFT: folder tree ──
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.078f,0.086f,0.098f,1.f));
         ImGui::BeginChild("##ptree", ImVec2(180, totalH), false);
         ImGui::Spacing();
@@ -3425,7 +2586,7 @@ if (ImGui::BeginTabBar("##btabs")) {
         ImGui::PopStyleColor();
         ImGui::SameLine(0, 0);
 
-        // в”Ђв”Ђ RIGHT: file grid в”Ђв”Ђ
+        // ── RIGHT: file grid ──
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.086f,0.094f,0.106f,1.f));
         ImGui::BeginChild("##pfiles", ImVec2(-1, totalH), false);
 
@@ -3579,7 +2740,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                         dl->AddEllipse(ImVec2(cx,cy), ImVec2(S*.32f, S*.16f), IM_COL32(60,140,240,120), 0.f, 32, 1.f);
                     }
                     else if (iconType == IconType::Prefab) {
-                        // РёР»-Р·РІРµР·РґР° (РєР°Рє Р·РЅР°С‡РѕРє РїСЂРµС„Р°Р±Р° РІ Unity) вЂ” СЃСЂР°Р·Сѓ РѕС‚Р»РёС‡Р°РµС‚СЃСЏ РѕС‚ РѕР±С‹С‡РЅРѕР№ РјРѕРґРµР»Рё
+                        // ил-звезда (как значок префаба в Unity) — сразу отличается от обычной модели
                         float R = S*.30f;
                         ImVec2 star[10];
                         for (int i=0;i<10;i++) {
@@ -3611,11 +2772,11 @@ if (ImGui::BeginTabBar("##btabs")) {
                     }
                     else if (iconType == IconType::MaterialIcon) {
                         // Sphere preview using material's actual color
-                        Material previewMat = LoadMaterial(e.path().string());
-                        ImU32 sphereCol = IM_COL32(
-                            (int)(previewMat.color.r*255),
-                            (int)(previewMat.color.g*255),
-                            (int)(previewMat.color.b*255), 255);
+                        static std::unordered_map<std::string, ImU32> matIconCache;
+                        auto itC = matIconCache.find(e.path().string());
+                        ImU32 sphereCol;
+                        if (itC != matIconCache.end()) { sphereCol = itC->second; }
+                        else { Material pm = LoadMaterial(e.path().string()); sphereCol = IM_COL32((int)(pm.color.r*255),(int)(pm.color.g*255),(int)(pm.color.b*255),255); matIconCache[e.path().string()] = sphereCol; }
                         float r = S*.30f;
                         dl->AddCircleFilled(ImVec2(cx,cy), r, sphereCol, 24);
                         // Highlight (specular dot) for shiny look
@@ -3643,10 +2804,10 @@ if (ImGui::BeginTabBar("##btabs")) {
                     if (ImGui::IsItemClicked()) {
                         assetSelected = e.path().string();
                         if (isDir) assetCurrentPath = e.path().string();
-                        else if (ext==".mat") selType = SelectionType::None; // РїРѕРєР°Р·Р°С‚СЊ РјР°С‚РµСЂРёР°Р» РІ Inspector
+                        else if (ext==".mat") selType = SelectionType::None; // показать материал в Inspector
                     }
 
-                    // в”Ђв”Ђ Drag source: РјР°С‚РµСЂРёР°Р»С‹ РјРѕР¶РЅРѕ РїРµСЂРµС‚Р°С‰РёС‚СЊ РЅР° РѕР±СЉРµРєС‚ в”Ђв”Ђ
+                    // ── Drag source: материалы можно перетащить на объект ──
                     if (ext==".mat") {
                         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                             std::string dragPath = e.path().string();
@@ -3664,43 +2825,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                         ImGui::EndDragDropSource();
                     }
                 }
-                if (ext==".png"||ext==".jpg"||
-                    ext==".jpeg"||ext==".bmp"||
-                    ext==".tga"||ext==".gif") {
-                    if (ImGui::BeginDragDropSource(
-                        ImGuiDragDropFlags_SourceAllowNullID)) {
-                        std::string dragPath =
-                            e.path().string();
-                        ImGui::SetDragDropPayload(
-                            "TEXTURE_PATH",
-                            dragPath.c_str(),
-                            dragPath.size()+1,
-                            ImGuiCond_Once);
-                        ImGui::TextColored(
-                            ImVec4(0.6f,0.8f,1.f,1.f),
-                            "Texture: %s", name.c_str());
-                        ImGui::EndDragDropSource();
-                    }
-                }
-                if (ext==".png"||ext==".jpg"||
-                    ext==".jpeg"||ext==".bmp"||
-                    ext==".tga"||ext==".gif") {
-                    if (ImGui::BeginDragDropSource(
-                        ImGuiDragDropFlags_SourceAllowNullID)) {
-                        std::string dragPath =
-                            e.path().string();
-                        ImGui::SetDragDropPayload(
-                            "TEXTURE_PATH",
-                            dragPath.c_str(),
-                            dragPath.size()+1,
-                            ImGuiCond_Once);
-                        ImGui::TextColored(
-                            ImVec4(0.6f,0.8f,1.f,1.f),
-                            "Texture: %s", name.c_str());
-                        ImGui::EndDragDropSource();
-                    }
-                }
-                    // в”Ђв”Ђ Drag source: Lua-СЃРєСЂРёРїС‚С‹ РјРѕР¶РЅРѕ РїРµСЂРµС‚Р°С‰РёС‚СЊ РЅР° РѕР±СЉРµРєС‚ (РєР°Рє РІ Unity) в”Ђв”Ђ
+                    // ── Drag source: Lua-скрипты можно перетащить на объект (как в Unity) ──
                     if (ext==".lua") {
                         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                             std::string dragPath = e.path().string();
@@ -3713,7 +2838,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && !isDir) {
                         if (ext==".lua") openInVSCode(e.path().string());
                         else if (ext==".mat") {
-                            // РџСЂРёРјРµРЅРёС‚СЊ РјР°С‚РµСЂРёР°Р» Рє РІС‹Р±СЂР°РЅРЅРѕРјСѓ РѕР±СЉРµРєС‚Сѓ (Р±С‹СЃС‚СЂС‹Р№ СЃРїРѕСЃРѕР± Р±РµР· drag&drop)
+                            // Применить материал к выбранному объекту (быстрый способ без drag&drop)
                             if (selType==SelectionType::Object && sel>=0 && sel<(int)objects.size()) {
                                 Material loaded = LoadMaterial(e.path().string());
                                 auto& tobj = objects[sel];
@@ -3734,7 +2859,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                                     auto& tobj = objects[sel];
                                     if (tobj.materials.empty()) { Material m; m.name="Default"; m.color=tobj.color; tobj.materials.push_back(m); tobj.activeMaterial=0; }
                                     auto& tmat = tobj.materials[tobj.activeMaterial];
-                                    int target = (g_MatPickTarget!=0) ? g_MatPickTarget : 1; // Р±РµР· СЏРІРЅРѕРіРѕ РІС‹Р±РѕСЂР° вЂ” РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ Р±Р°Р·Р°
+                                    int target = (g_MatPickTarget!=0) ? g_MatPickTarget : 1; // без явного выбора — по умолчанию база
                                     if (target==2) {
                                         tmat.layer2TexturePath = e.path().string(); tmat.layer2TextureID = tid;
                                         logInfo("Layer 2 -> "+tobj.name+" ["+tmat.name+"]");
@@ -3746,7 +2871,7 @@ if (ImGui::BeginTabBar("##btabs")) {
                                         if (tobj.activeMaterial==0) { tobj.texturePath=tmat.texturePath; tobj.textureID=tid; }
                                         logInfo("Texture -> "+tobj.name+" ["+tmat.name+"]");
                                     }
-                                    g_MatPickTarget = 0; // СЂРµР¶РёРј РІС‹Р±РѕСЂР° СЃР±СЂР°СЃС‹РІР°РµС‚СЃСЏ СЃСЂР°Р·Сѓ РїРѕСЃР»Рµ РЅР°Р·РЅР°С‡РµРЅРёСЏ
+                                    g_MatPickTarget = 0; // режим выбора сбрасывается сразу после назначения
                                 }
                         } else if (selUI>=0 && selUI<(int)uiElements.size()) { GLuint tid=VE::LoadTextureRaw(e.path().string()); if(tid){ uiElements[selUI].tex=tid; uiElements[selUI].texPath=e.path().string(); logInfo("Texture -> "+uiElements[selUI].name); } } else logInfo("Select object or UI first");
                         } else if (ext==".obj"||ext==".fbx"||ext==".gltf"||ext==".glb") {
@@ -3858,7 +2983,7 @@ if (ImGui::BeginTabBar("##btabs")) {
 
         // Rename file popup
         static char s_RenameBuffer[256] = {};
-        // ── Create Script popup (как в Unity: спросить имя) ──
+        // -- Create Script popup (��� � Unity: �������� ���) --
         if (s_wantCreateScript) { ImGui::OpenPopup("##create_script"); s_wantCreateScript=false; }
         if (ImGui::BeginPopupModal("##create_script", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             static char scriptNameBuf[128] = "NewScript";
@@ -3910,7 +3035,7 @@ if (ImGui::BeginTabBar("##btabs")) {
         ImGui::EndTabItem();
     }
 
-        // в”Ђв”Ђ Animation в”Ђв”Ђ
+        // ── Animation ──
     if (ImGui::BeginTabItem("  Animation")) {
         ImGui::Spacing();
         if (selType != SelectionType::Object || sel < 0 || sel >= (int)objects.size()) {
@@ -3920,7 +3045,7 @@ if (ImGui::BeginTabBar("##btabs")) {
             ImGui::TextColored(ImVec4(0.85f,0.85f,0.90f,1.f), "  Animating: %s", aobj.name.c_str());
             ImGui::Spacing();
 
-            // в”Ђв”Ђ Р’С‹Р±РѕСЂ РєР»РёРїР° в”Ђв”Ђ
+            // ── Выбор клипа ──
             const char* curClipName = (aobj.customClipIndex>=0 && aobj.customClipIndex<(int)aobj.customClips.size())
                 ? aobj.customClips[aobj.customClipIndex].name.c_str() : "None";
             ImGui::SetNextItemWidth(180);
@@ -3963,7 +3088,7 @@ if (ImGui::BeginTabBar("##btabs")) {
 
                 float dur = clip.keys.empty() ? 1.f : std::max(1.f, clip.keys.back().time);
 
-                // в”Ђв”Ђ Р’РёР·СѓР°Р»СЊРЅС‹Р№ С‚Р°Р№РјР»Р°Р№РЅ (РєР°Рє РІ Blender/Blockbench) в”Ђв”Ђ
+                // ── Визуальный таймлайн (как в Blender/Blockbench) ──
                 ImGui::Spacing();
                 {
                     float timelineWidth  = ImGui::GetContentRegionAvail().x - 16.f;
@@ -3975,14 +3100,14 @@ if (ImGui::BeginTabBar("##btabs")) {
 
                     dl->AddRectFilled(p0, p1, IM_COL32(18,18,24,255), 4.f);
 
-                    // РµС‚РєР° РїРѕ СЃРµРєСѓРЅРґР°Рј + РїРѕРґРїРёСЃРё
+                    // етка по секундам + подписи
                     for (int s=0; s<=(int)ceilf(dur); s++) {
                         float x = p0.x + s*pxPerSec;
                         dl->AddLine(ImVec2(x,p0.y), ImVec2(x,p1.y), IM_COL32(48,48,56,255));
                         dl->AddText(ImVec2(x+3,p0.y+2), IM_COL32(140,140,150,255), (std::to_string(s)+"s").c_str());
                     }
 
-                    // Р РѕРјР±РёРєРё вЂ” РїРѕ РѕРґРЅРѕРјСѓ РЅР° РєР»СЋС‡РµРІРѕР№ РєР°РґСЂ
+                    // Ромбики — по одному на ключевой кадр
                     float trackY = p0.y + timelineHeight*0.68f;
                     for (auto& k : clip.keys) {
                         float x = p0.x + k.time*pxPerSec;
@@ -3992,32 +3117,32 @@ if (ImGui::BeginTabBar("##btabs")) {
                         dl->AddQuad(ImVec2(x,trackY-6), ImVec2(x+6,trackY), ImVec2(x,trackY+6), ImVec2(x-6,trackY), IM_COL32(10,10,12,255),1.5f);
                     }
 
-                    // РџР»РµР№С…РµРґ (С‚РµРєСѓС‰РµРµ РІСЂРµРјСЏ)
+                    // Плейхед (текущее время)
                     float phX = p0.x + glm::clamp(aobj.customAnimTime,0.f,dur)*pxPerSec;
                     dl->AddLine(ImVec2(phX,p0.y), ImVec2(phX,p1.y), IM_COL32(255,90,90,255), 2.f);
                     dl->AddTriangleFilled(ImVec2(phX-5,p0.y), ImVec2(phX+5,p0.y), ImVec2(phX,p0.y+8), IM_COL32(255,90,90,255));
 
                     ImGui::InvisibleButton("##timeline", ImVec2(timelineWidth, timelineHeight));
-                    // РљР»РёРє/РїСЂРѕС‚Р°СЃРєРёРІР°РЅРёРµ РїРѕ РїРѕР»РѕСЃРµ вЂ” СЃРєСЂР°Р± РІСЂРµРјРµРЅРё (РєР°Рє С‚Р°СЃРєР°С‚СЊ РїР»РµР№С…РµРґ РІ Blender)
+                    // Клик/протаскивание по полосе — скраб времени (как таскать плейхед в Blender)
                     if (ImGui::IsItemActive()) {
                         float mx = ImGui::GetIO().MousePos.x;
                         float t = (mx - p0.x) / pxPerSec;
                         aobj.customAnimTime = glm::clamp(t, 0.f, dur);
                         aobj.customAnimPlaying = false;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click or drag to scrub time вЂ” diamonds are keyframes");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click or drag to scrub time — diamonds are keyframes");
                 }
                 ImGui::Spacing();
                 ImGui::Text("Time: %.2f s", aobj.customAnimTime);
                 if (!aobj.customAnimPlaying && !clip.keys.empty())
-                    SampleObjectClip(clip, aobj.customAnimTime, aobj.pos, aobj.rot, aobj.scale); // РїСЂРµРІСЊСЋ РїРѕР·С‹ РїСЂРё СЃРєСЂР°Р±Рµ
+                    SampleObjectClip(clip, aobj.customAnimTime, aobj.pos, aobj.rot, aobj.scale); // превью позы при скрабе
 
                 ImGui::Spacing();
                 ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f,0.15f,0.18f,1.f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, COL_ACCENT);
                 if (ImGui::Button("  + Add Keyframe at current time (captures current Transform)  ")) {
                     ObjectKeyframe k; k.time=aobj.customAnimTime; k.pos=aobj.pos; k.rot=aobj.rot; k.scale=aobj.scale;
-                    // РµСЃР»Рё РєР°РґСЂ РІ СЌС‚Рѕ Р¶Рµ РІСЂРµРјСЏ СѓР¶Рµ РµСЃС‚СЊ вЂ” Р·Р°РјРµРЅСЏРµРј, РёРЅР°С‡Рµ РґРѕР±Р°РІР»СЏРµРј Рё СЃРѕСЂС‚РёСЂСѓРµРј
+                    // если кадр в это же время уже есть — заменяем, иначе добавляем и сортируем
                     bool replaced=false;
                     for (auto& ek : clip.keys) if (fabsf(ek.time-k.time)<0.001f) { ek=k; replaced=true; break; }
                     if (!replaced) {
@@ -4068,9 +3193,9 @@ ImGui::PopStyleColor();
 
 } // end if (!g_PlayerMode)
 else {
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    //   PLAYER MODE вЂ” РїРѕР»РЅРѕСЌРєСЂР°РЅРЅС‹Р№ РІРёРґ РёРіСЂС‹, Р±РµР· СЂРµРґР°РєС‚РѕСЂР°
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+    // ---------------------------------------------------------══════════════════════════════════════════════════════
+    //   PLAYER MODE — полноэкранный вид игры, без редактора
+    // ---------------------------------------------------------══════════════════════════════════════════════════════
     g_VpSize = io.DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0,0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
@@ -4083,8 +3208,8 @@ else {
         ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoDocking);
     float u2g=g_VpSize.x>0.f?g_VpSize.x/3840.f:1.f;
     float v1g=g_VpSize.y>0.f?g_VpSize.y/2160.f:1.f;
-    ImGui::Image((ImTextureID)(intptr_t)gameTex, g_VpSize, ImVec2(0,1), ImVec2(1,0));
-    // в”Ђв”Ђ Player mode: РєСѓСЂСЃРѕСЂ Р·Р°С…РІР°С‚С‹РІР°РµС‚СЃСЏ СЃСЂР°Р·Сѓ (РЅРµС‚ UI, РЅРµРєСѓРґР° РєР»РёРєР°С‚СЊ) в”Ђв”Ђ
+    ImGui::Image((ImTextureID)(intptr_t)gameTex, g_VpSize, ImVec2(0,v1g), ImVec2(u2g,0));
+    // ── Player mode: курсор захватывается сразу (нет UI, некуда кликать) ──
     if (!g_MouseCaptured) {
         g_MouseCaptured = true;
         glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -4101,14 +3226,21 @@ else {
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
-}
-    VE::Console::Get().Render();
 
-ImGui::Render();
-ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-g_RawMouseDX=0; g_RawMouseDY=0; // СЃР±СЂРѕСЃ РґРµР»СЊС‚С‹ РџР•Р Р•Р” poll вЂ” СЃРІРµР¶РёРµ РґР°РЅРЅС‹Рµ РїРµСЂРµР¶РёРІСѓС‚ РґРѕ СЃР»РµРґСѓСЋС‰РµРіРѕ РєР°РґСЂР°
-window->OnUpdate();
+
 }
+    void RenderMaterialEditor();
+    void VE_SetMaterialBridge(std::vector<SceneObject>*, int*, SelectionType*);
+    VE_SetMaterialBridge(&objects, &sel, &selType);
+    RenderMaterialEditor();
+    extern void RenderShaderEditor();
+    RenderShaderEditor();
+    ImGui::Render();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0,0,(int)ImGui::GetIO().DisplaySize.x,(int)ImGui::GetIO().DisplaySize.y);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    g_RawMouseDX=0; g_RawMouseDY=0;
+    window->OnUpdate();
 } // end while
 
 g_Prefs.Save();
@@ -4127,9 +3259,21 @@ glDeleteRenderbuffers(1,&sceneMSColorRBO);glDeleteRenderbuffers(1,&sceneMSDepthR
 glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO);
 delete window;
 return 0;
+
+
 }
 
-
+// ---- Material Editor bridge ----
+static std::vector<SceneObject>* g_veObjects = nullptr;
+static int* g_veSel = nullptr;
+static SelectionType* g_veSelType = nullptr;
+void VE_SetMaterialBridge(std::vector<SceneObject>* o, int* s, SelectionType* st) { g_veObjects = o; g_veSel = s; g_veSelType = st; }
+void VE_ApplyMaterialToSelected(float r, float g, float b, float metallic, float roughness) {
+    if (g_veObjects && g_veSel && g_veSelType && *g_veSelType == SelectionType::Object && *g_veSel >= 0 && *g_veSel < (int)g_veObjects->size()) {
+        (*g_veObjects)[*g_veSel].color = glm::vec3(r, g, b);
+        logInfo("Material applied to " + (*g_veObjects)[*g_veSel].name);
+    }
+}
 
 
 

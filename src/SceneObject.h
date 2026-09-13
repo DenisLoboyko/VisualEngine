@@ -3,13 +3,14 @@
 // в”Ђв”Ђ SceneObject, Ray, РіРёР·РјРѕ-С…РёС‚С‚РµСЃС‚С‹ (РІС‹РЅРµСЃРµРЅРѕ РёР· main.cpp) в”Ђв”Ђ
 
 struct SceneObject {
+    std::vector<std::string> scripts;
     std::string name;
     glm::vec3 pos={0,0,0},rot={0,0,0},scale={1,1,1},color={0.8f,0.6f,0.3f};
     PrimitiveType type=PrimitiveType::Cube;
     std::string modelPath;
     std::vector<std::string> scriptPaths;  // РЅРµСЃРєРѕР»СЊРєРѕ СЃРєСЂРёРїС‚РѕРІ РЅР° РѕР±СЉРµРєС‚ (РєР°Рє РєРѕРјРїРѕРЅРµРЅС‚С‹ РІ Unity/Godot)
     std::shared_ptr<VE::Model> model;
-    bool active=true; VE::EntityID ecsID=VE::NULL_ENTITY;
+    bool instanced=false; bool active=true; VE::EntityID ecsID=VE::NULL_ENTITY;
     bool hasScript=false, hasRigidBody=false;
     bool hasCollider=false;
     float mass=1.f; bool useGravity=true;
@@ -97,4 +98,6 @@ bool gizmoArrowHit(const Ray& ray,glm::vec3 op,glm::vec3 ax,float gs,float& t){
     glm::vec3 end=op+ax*gs;
     return rayAABB(ray,(glm::min(op,end)+glm::max(op,end))*.5f,(glm::max(op,end)-glm::min(op,end))*.5f+0.08f*gs,t);
 }
+
+
 

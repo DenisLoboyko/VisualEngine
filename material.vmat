@@ -1,0 +1,7 @@
+# VisualEngine material file
+base_color 0.800 0.800 0.800
+metallic 1.000
+roughness 1.000
+blend_mode 0
+shading_model 0
+two_sided 0

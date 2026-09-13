@@ -1,240 +1,136 @@
-#pragma once
-// =========================================================
-//  BuildSystem.h  —  Build/Export для VisualEngine
-//
-//  Экспортирует игру в папку Build/:
-//  - Копирует Assets/ (сцены, скрипты, текстуры, звуки)
-//  - Копирует нужные .dll (glfw, openal и т.д.)
-//  - Копирует уже собранный VisualEngine.exe -> <Имя игры>.exe
-//  - Пишет player.cfg — движок сам подхватывает его при старте
-//    и запускается в режиме готовой игры, без редактора
-//    (запускается двойным кликом, никакой компиляции не нужно —
-//     движок уже скомпилирован, просто переиспользуем тот же .exe
-//     в специальном режиме)
-//
-//  Положи файл: src/Core/BuildSystem.h
-//
-//  C++ API:
-//    VE::BuildSystem::Get().SetEngineRoot("C:\\...\\VisualEngine");
-//    VE::BuildSystem::Get().Build(projectRoot, currentScenePath);
-// =========================================================
-
+﻿#pragma once
 #include <string>
-#include <fstream>
-#include <iostream>
-#include <filesystem>
 #include <vector>
-
-namespace fs = std::filesystem;
+#include <filesystem>
+#include <fstream>
+#include <windows.h>
+#include <tlhelp32.h>
 
 namespace VE {
+class BuildSystem {
+public:
+    static BuildSystem& Get() { static BuildSystem b; return b; }
+    void SetEngineRoot(const std::string& r) { m_root = r; }
+    const std::vector<std::string>& GetLog() const { return m_log; }
 
-    class BuildSystem
-    {
-    public:
-        static BuildSystem& Get()
-        {
-            static BuildSystem instance;
-            return instance;
-        }
-        BuildSystem(const BuildSystem&)            = delete;
-        BuildSystem& operator=(const BuildSystem&) = delete;
+    bool Build(const std::string& projectRoot, const std::string& scenePath, const std::string& gameName) {
+        namespace fs = std::filesystem;
+        m_log.clear();
+        auto L = [&](const std::string& s){ m_log.push_back(s); };
+        try {
+            fs::path root = fs::path(projectRoot);
+            fs::path outDir = root / "Build";
+            fs::create_directories(outDir);
+            L("Build dir: " + outDir.string());
 
-        void SetEngineRoot(const std::string& root) { m_EngineRoot = root; }
+            std::vector<fs::path> candidateSources;
+            candidateSources.push_back(root / ".." / "x64" / "Release" / "VisualEngine.exe");
+            candidateSources.push_back(root / ".." / "x64" / "Debug" / "VisualEngine.exe");
+            candidateSources.push_back(root / ".." / "bin" / "Release" / "VisualEngine.exe");
+            candidateSources.push_back(root / ".." / "bin" / "Debug" / "VisualEngine.exe");
+            char exeBuf[MAX_PATH + 1] = { 0 };
+            GetModuleFileNameA(nullptr, exeBuf, MAX_PATH);
+            candidateSources.push_back(fs::path(exeBuf).parent_path() / "VisualEngine.exe");
 
-        // ── Главный метод: собрать игру ──────────────────────
-        // projectRoot    — папка проекта (где лежит Assets/)
-        // scenePath      — путь к главной сцене
-        // outputName     — имя выходного exe (без .exe)
-        bool Build(const std::string& projectRoot,
-                   const std::string& scenePath,
-                   const std::string& outputName = "Game")
-        {
-            m_Log.clear();
-            log("=== VisualEngine Build ===");
-
-            // Папка сборки
-            std::string buildDir = projectRoot + "\\..\\Build";
-            try { fs::create_directories(buildDir); }
-            catch (const std::exception& e) { log("ERROR: " + std::string(e.what())); return false; }
-
-            log("Build dir: " + buildDir);
-
-            // 1. Копируем Assets
-            std::string srcAssets = projectRoot + "\\Assets";
-            std::string dstAssets = buildDir    + "\\Assets";
-            if (fs::exists(srcAssets)) {
-                CopyDir(srcAssets, dstAssets);
-                log("Copied: Assets/");
-            } else {
-                log("WARN: No Assets folder found");
+            fs::path srcExe;
+            for (const auto& p : candidateSources) {
+                std::error_code ec;
+                if (fs::exists(p, ec) && !ec) {
+                    srcExe = p;
+                    break;
+                }
+            }
+            if (srcExe.empty()) {
+                throw std::runtime_error("No VisualEngine.exe found in x64/Release or x64/Debug build output.");
             }
 
-            // 2. Копируем Saves если есть
-            std::string srcSaves = projectRoot + "\\Saves";
-            if (fs::exists(srcSaves)) {
-                CopyDir(srcSaves, buildDir + "\\Saves");
-                log("Copied: Saves/");
+            std::string exeFilename = (gameName.empty() ? std::string("Game") : gameName) + ".exe";
+            fs::path gameExe = outDir / exeFilename;
+
+            if (fs::exists(gameExe)) {
+                HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                if (hSnap != INVALID_HANDLE_VALUE) {
+                    PROCESSENTRY32W pe{}; pe.dwSize = sizeof(pe);
+                    std::wstring targetPath = gameExe.wstring();
+                    while (Process32NextW(hSnap, &pe)) {
+                        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                        if (!hProc) continue;
+                        wchar_t fullPath[MAX_PATH] = {0};
+                        DWORD size = MAX_PATH;
+                        if (QueryFullProcessImageNameW(hProc, 0, fullPath, &size)) {
+                            std::wstring procPath = fullPath;
+                            if (_wcsicmp(procPath.c_str(), targetPath.c_str()) == 0) {
+                                TerminateProcess(hProc, 1);
+                                L("terminated locked process: " + gameExe.filename().string());
+                                Sleep(250);
+                            }
+                        }
+                        CloseHandle(hProc);
+                    }
+                    CloseHandle(hSnap);
+                }
+
+                std::error_code ec;
+                for (int i = 0; i < 20; ++i) {
+                    if (!fs::exists(gameExe, ec)) break;
+                    fs::remove(gameExe, ec);
+                    if (!ec) break;
+                    Sleep(100);
+                }
             }
 
-            // 3. Копируем DLL из папки движка
-            CopyDLLs(buildDir);
+            fs::copy_file(srcExe, gameExe, fs::copy_options::overwrite_existing);
+            L("built exe: " + gameExe.string());
 
-            // 4. Определяем главную сцену (относительный путь от Build/)
-            std::string mainScene = scenePath.empty()
-                ? "Assets\\scene.vescene"
-                : RelativePath(scenePath, projectRoot);
-            for (auto& c : mainScene) if (c=='\\') c='/';
-
-            // 5. Копируем уже собранный движок и переименовываем в игру.
-            //    Никакой отдельной компиляции не требуется — движок сам
-            //    умеет запускаться в режиме готовой игры (см. player.cfg).
-            std::string exeName = outputName + ".exe";
-            if (!CopyEngineExe(buildDir, exeName)) {
-                log("ERROR: Could not find a compiled VisualEngine.exe");
-                log("Build the engine in Visual Studio first (Ctrl+Shift+B), then Build again");
-                return false;
-            }
-            log("Copied engine as: " + exeName);
-
-            // 6. Пишем player.cfg — движок при старте увидит этот файл
-            //    рядом с собой и запустится сразу в игровом режиме.
-            {
-                std::ofstream pf(buildDir + "\\player.cfg");
-                pf << mainScene << "\n";
-            }
-            log("Generated: player.cfg (scene = " + mainScene + ")");
-
-            // 7. README
-            GenerateReadme(buildDir, outputName, mainScene);
-
-            log("");
-            log("=== BUILD READY ===");
-            log("Build folder: " + buildDir);
-            log("Run " + exeName + " - it launches straight into the game, no editor.");
-
-            return true;
-        }
-
-        const std::vector<std::string>& GetLog() const { return m_Log; }
-
-    private:
-        BuildSystem() = default;
-
-        std::string m_EngineRoot;
-        std::vector<std::string> m_Log;
-
-        void log(const std::string& msg)
-        {
-            m_Log.push_back(msg);
-            std::cout << "[Build] " << msg << "\n";
-        }
-
-        void CopyDir(const std::string& src, const std::string& dst)
-        {
-            try {
-                fs::create_directories(dst);
-                for (auto& e : fs::recursive_directory_iterator(src)) {
-                    auto rel  = fs::relative(e.path(), src);
-                    auto dest = fs::path(dst) / rel;
-                    if (e.is_directory()) {
-                        fs::create_directories(dest);
+            fs::path srcDir = srcExe.parent_path();
+            for (const auto& e : fs::directory_iterator(srcDir)) {
+                if (e.path().extension() == ".dll") {
+                    fs::path dst = outDir / e.path().filename();
+                    std::error_code ec;
+                    if (fs::exists(dst, ec)) {
+                        fs::remove(dst, ec);
+                    }
+                    fs::copy_file(e.path(), dst, fs::copy_options::overwrite_existing, ec);
+                    if (ec) {
+                        L("warn copy dll failed: " + std::string(ec.message()));
                     } else {
-                        fs::create_directories(dest.parent_path());
-                        fs::copy_file(e.path(), dest, fs::copy_options::overwrite_existing);
-                    }
-                }
-            } catch (const std::exception& ex) {
-                log("WARN copy: " + std::string(ex.what()));
-            }
-        }
-
-        void CopyDLLs(const std::string& buildDir)
-        {
-            // Ищем DLL рядом с движком
-            std::vector<std::string> dllNames = {
-                "glfw3.dll", "assimp-vc143-mt.dll",
-                "lua54.dll", "OpenAL32.dll"
-            };
-
-            for (auto& dll : dllNames) {
-                for (auto& dir : EngineSearchDirs()) {
-                    fs::path src = fs::path(dir) / dll;
-                    if (fs::exists(src)) {
-                        try {
-                            fs::copy_file(src, fs::path(buildDir) / dll,
-                                fs::copy_options::overwrite_existing);
-                            log("Copied DLL: " + dll);
-                        } catch (...) {}
-                        break;
+                        L("copied dll: " + e.path().filename().string());
                     }
                 }
             }
-        }
 
-        // Ищет уже скомпилированный VisualEngine.exe (Debug или Release)
-        // в нескольких вероятных местах и копирует его как <exeName>.
-        bool CopyEngineExe(const std::string& buildDir, const std::string& exeName)
-        {
-            std::vector<std::string> candidates = {
-                fs::current_path().string() + "\\VisualEngine.exe",
-                m_EngineRoot + "\\VisualEngine.exe",
-                m_EngineRoot + "\\Debug\\VisualEngine.exe",
-                m_EngineRoot + "\\Release\\VisualEngine.exe",
-                m_EngineRoot + "\\x64\\Debug\\VisualEngine.exe",
-                m_EngineRoot + "\\x64\\Release\\VisualEngine.exe",
-                m_EngineRoot + "\\VisualEngine\\x64\\Debug\\VisualEngine.exe",
-                m_EngineRoot + "\\VisualEngine\\x64\\Release\\VisualEngine.exe",
-            };
-            for (auto& c : candidates) {
-                if (fs::exists(c)) {
-                    try {
-                        fs::copy_file(c, fs::path(buildDir) / exeName,
-                            fs::copy_options::overwrite_existing);
-                        return true;
-                    } catch (const std::exception& ex) {
-                        log("WARN copy exe: " + std::string(ex.what()));
-                    }
-                }
+            if (fs::exists(root / "Assets")) {
+                fs::copy(root / "Assets", outDir / "Assets", fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+                L("copied: project Assets/");
             }
+
+            if (fs::exists(root / "logo.png")) {
+                fs::copy_file(root / "logo.png", outDir / "logo.png", fs::copy_options::overwrite_existing);
+            }
+
+            fs::path sceneSrc(scenePath);
+            fs::path sceneDst = outDir / "Assets" / "Scenes" / sceneSrc.filename();
+            fs::create_directories(sceneDst.parent_path());
+            if (fs::exists(sceneSrc)) {
+                fs::copy_file(sceneSrc, sceneDst, fs::copy_options::overwrite_existing);
+                L("scene -> " + sceneDst.string());
+            }
+
+            std::string relScene = "Assets\\Scenes\\" + sceneSrc.filename().string();
+            { std::ofstream cfg(outDir / "player.cfg"); cfg << relScene << "\n"; }
+            L("player.cfg -> " + relScene);
+
+            std::string exeName = (gameName.empty() ? "Game" : gameName) + ".exe";
+            L("BUILD OK! Run: " + (outDir / exeName).string());
+            return true;
+        } catch (const std::exception& ex) {
+            L(std::string("BUILD ERROR: ") + ex.what());
             return false;
         }
+    }
 
-        std::vector<std::string> EngineSearchDirs()
-        {
-            return {
-                m_EngineRoot + "\\x64\\Debug",
-                m_EngineRoot + "\\x64\\Release",
-                m_EngineRoot,
-                fs::current_path().string()
-            };
-        }
-
-        std::string RelativePath(const std::string& full, const std::string& base)
-        {
-            try {
-                return fs::relative(full, base).string();
-            } catch (...) {
-                return full;
-            }
-        }
-
-        void GenerateReadme(const std::string& buildDir,
-                            const std::string& outputName,
-                            const std::string& mainScene)
-        {
-            std::ofstream f(buildDir + "\\README.txt");
-            f << "=== " << outputName << " — VisualEngine Build ===\n\n";
-            f << "Main scene: " << mainScene << "\n\n";
-            f << "To run the game:\n";
-            f << "  Just run " << outputName << ".exe — no compiling needed.\n";
-            f << "  (player.cfg tells the engine which scene to launch straight into.)\n\n";
-            f << "Files:\n";
-            f << "  Assets/     — game assets (scenes, scripts, textures, sounds)\n";
-            f << "  Saves/      — save files\n";
-            f << "  *.dll       — required libraries\n";
-            f << "  player.cfg  — tells the exe which scene to auto-launch\n";
-        }
-    };
-
-} // namespace VE
+private:
+    std::string m_root;
+    std::vector<std::string> m_log;
+};
+}

@@ -1,0 +1,383 @@
+﻿#pragma once
+#include "InstanceRenderer.h"
+static int lua_instAdd(lua_State* L); static int lua_instRemove(lua_State* L); static int lua_instSetActive(lua_State* L); static int lua_instClear(lua_State* L);
+inline const luaL_Reg g_instLib[] = { {"addCube", lua_instAdd}, {"remove", lua_instRemove}, {"setActive", lua_instSetActive}, {"clear", lua_instClear}, {nullptr, nullptr} };
+#include <map>
+#include <lua.hpp>
+#include <lauxlib.h>
+#include <lualib.h>
+#include <glm/glm.hpp>
+#include <GLFW/glfw3.h>
+#include <cstring>
+#include <filesystem>
+#include <glm/gtc/matrix_transform.hpp>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include "SceneObject.h"
+
+// GameLua � ���� ��� ������� �������� (onUpdate, Input, Transform)
+namespace GameLua {
+
+struct ScriptInstance {
+    int objIndex = -1;
+    lua_State* L = nullptr;
+    std::string scriptPath;
+    bool valid = false;
+};
+
+static lua_State* g_L = nullptr;
+static std::vector<ScriptInstance> g_instances;
+static std::vector<SceneObject>* g_objects = nullptr;
+static float g_deltaTime = 0.016f;
+static float g_time = 0.0f;
+static double g_mouseDX = 0.0, g_mouseDY = 0.0;
+static bool g_mouseCaptured = false;
+static std::string g_hudText;
+static glm::vec3 g_camFront = glm::vec3(0,0,-1);
+extern void* g_window;  // GLFWwindow*
+
+// Forward decls ���������
+int lua_print(lua_State* L); int lua_setEmissive(lua_State* L); int lua_getDistance(lua_State* L); int lua_getObjectPos(lua_State* L); int lua_hudSetText(lua_State* L);
+int lua_isKeyDown(lua_State* L);
+int lua_getMouseDelta(lua_State* L);
+int lua_captureMouse(lua_State* L);
+int lua_getDeltaTime(lua_State* L);
+int lua_getTime(lua_State* L);
+int lua_getPosition(lua_State* L);
+int lua_setPosition(lua_State* L);
+int lua_getRotation(lua_State* L);
+int lua_setRotation(lua_State* L);
+int lua_getScale(lua_State* L);
+int lua_setScale(lua_State* L);
+int lua_findObject(lua_State* L);
+int lua_createObject(lua_State* L);
+int lua_destroyObject(lua_State* L);
+int lua_setColorObj(lua_State* L);
+int lua_setTextureObj(lua_State* L);
+int lua_setActiveObj(lua_State* L);
+int lua_setTiling(lua_State* L);
+int lua_setInstanced(lua_State* L);
+int lua_getCameraPos(lua_State* L);
+int lua_setCameraPos(lua_State* L);
+int lua_getCameraRot(lua_State* L);
+int lua_setCameraRot(lua_State* L);
+int lua_lookAt(lua_State* L);
+
+inline const luaL_Reg g_inputLib[] = {
+    {"isKeyDown", lua_isKeyDown},
+    {"getMouseDelta", lua_getMouseDelta},
+    {"captureMouse", lua_captureMouse},
+    {NULL, NULL}
+};
+
+inline const luaL_Reg g_timeLib[] = {
+    {"getDeltaTime", lua_getDeltaTime},
+    {"getTime", lua_getTime},
+    {NULL, NULL}
+};
+
+inline const luaL_Reg g_objLib[] = {
+    {"getPosition", lua_getPosition},
+    {"setPosition", lua_setPosition},
+    {"getRotation", lua_getRotation},
+    {"setRotation", lua_setRotation},
+    {"getScale", lua_getScale},
+    {"setScale", lua_setScale},
+    {"find", lua_findObject},
+    {"create", lua_createObject},
+    {"destroy", lua_destroyObject},
+    {"setColor", lua_setColorObj},
+    {"setTexture", lua_setTextureObj},
+        {"setActive", lua_setActiveObj},
+    {"setTiling", lua_setTiling},
+    {"setInstanced", lua_setInstanced},
+    {"setEmissive", lua_setEmissive},
+    {"getDistance", lua_getDistance},
+    {"getObjectPos", lua_getObjectPos},
+    {"hudSetText", lua_hudSetText},
+    {NULL, NULL}
+};
+
+inline const luaL_Reg g_camLib[] = {
+    {"getPos", lua_getCameraPos},
+    {"setPos", lua_setCameraPos},
+    {"getRot", lua_getCameraRot},
+    {"setRot", lua_setCameraRot},
+    {"lookAt", lua_lookAt},
+    {NULL, NULL}
+};
+
+inline void Init(void* window, std::vector<SceneObject>* objects) {
+    g_window = window;
+    g_objects = objects;
+    if (g_L) lua_close(g_L);
+    g_L = luaL_newstate();
+    luaL_openlibs(g_L);
+    luaL_newlib(g_L, g_inputLib); lua_setglobal(g_L, "Input");
+    luaL_newlib(g_L, g_timeLib);  lua_setglobal(g_L, "Time");
+    luaL_newlib(g_L, g_objLib);   lua_setglobal(g_L, "Object");
+    luaL_newlib(g_L, g_instLib); lua_setglobal(g_L, "Inst");
+    luaL_newlib(g_L, g_camLib);   lua_setglobal(g_L, "Camera");
+    lua_register(g_L, "print", lua_print);
+}
+
+inline void SetMouseDelta(double dx, double dy) { g_mouseDX = dx; g_mouseDY = dy; }
+inline void SetDeltaTime(float dt) { g_deltaTime = dt; g_time += dt; }
+
+inline void AttachScript(int objIndex, const std::string& path) {
+    for (auto& inst : g_instances) {
+        if (inst.objIndex == objIndex && inst.scriptPath == path) {
+            if (inst.L) { lua_close(inst.L); inst.L = nullptr; }
+            inst.valid = false;
+        }
+    }
+    ScriptInstance inst;
+    inst.objIndex = objIndex;
+    inst.scriptPath = path;
+    inst.L = luaL_newstate();
+    luaL_openlibs(inst.L);
+    luaL_newlib(inst.L, g_inputLib); lua_setglobal(inst.L, "Input");
+    luaL_newlib(inst.L, g_timeLib);  lua_setglobal(inst.L, "Time");
+    luaL_newlib(inst.L, g_objLib);   lua_setglobal(inst.L, "Object");
+    luaL_newlib(inst.L, g_instLib); lua_setglobal(inst.L, "Inst");
+    luaL_newlib(inst.L, g_camLib);   lua_setglobal(inst.L, "Camera");
+    lua_register(inst.L, "print", lua_print);
+    lua_pushinteger(inst.L, objIndex);
+    lua_setglobal(inst.L, "selfIndex");
+    std::string resolved = path;
+    { namespace fs = std::filesystem;
+      if (!fs::exists(resolved)) {
+        const char* roots[] = { ".", "project", "..", "../.." };
+        for (auto r : roots) {
+            fs::path p1 = fs::path(r)/"Assets"/"Scripts"/(path + ".lua");
+            fs::path p2 = fs::path(r)/path;
+            if (fs::exists(p1)) { resolved = p1.string(); break; }
+            if (fs::exists(p2)) { resolved = p2.string(); break; }
+        }
+      } }
+    inst.scriptPath = resolved;
+    if (luaL_dofile(inst.L, resolved.c_str()) != LUA_OK) {
+        const char* err = lua_tostring(inst.L, -1);
+        (void)err;
+        lua_close(inst.L);
+        inst.L = nullptr;
+    } else {
+        inst.valid = true;
+        lua_getglobal(inst.L, "onStart");
+        if (lua_isfunction(inst.L, -1)) {
+            if (lua_pcall(inst.L, 0, 0, 0) != LUA_OK) { lua_pop(inst.L,1); }
+        } else { lua_pop(inst.L,1); }
+        lua_getglobal(inst.L, "onUpdate");
+        if (lua_isfunction(inst.L, -1)) {
+            lua_pushnumber(inst.L, g_deltaTime);
+            if (lua_pcall(inst.L, 1, 0, 0) != LUA_OK) { lua_pop(inst.L, 1); }
+        } else {
+            lua_pop(inst.L, 1);
+        }
+    }
+    g_instances.push_back(inst); g_mouseDX = 0; g_mouseDY = 0;
+}
+
+inline void UpdateAll(float dt){
+    g_deltaTime = dt;
+    for (auto& in : g_instances) {
+        if (!in.valid || !in.L) continue;
+        lua_getglobal(in.L, "onUpdate");
+        if (lua_isfunction(in.L, -1)) {
+            lua_pushnumber(in.L, dt);
+            if (lua_pcall(in.L, 1, 0, 0) != LUA_OK) { lua_pop(in.L,1); }
+        } else lua_pop(in.L, 1);
+    }
+    g_mouseDX = 0; g_mouseDY = 0;
+}
+
+inline void Shutdown() {
+    for (auto& inst : g_instances) if (inst.L) lua_close(inst.L);
+    g_instances.clear();
+    if (g_L) { lua_close(g_L); g_L = nullptr; }
+}
+
+} // namespace GameLua
+
+// -- ���������� ��������� --
+int GameLua::lua_print(lua_State* L) {
+    int n = lua_gettop(L);
+    for (int i = 1; i <= n; i++) {
+        if (i > 1) printf("\t");
+        printf("%s", lua_tostring(L, i));
+    }
+    printf("\n");
+    return 0;
+}
+
+int GameLua::lua_isKeyDown(lua_State* L) {
+    const char* key = luaL_checkstring(L, 1);
+    GLFWwindow* w = (GLFWwindow*)g_window;
+    int k = -1;
+    if (strcmp(key,"W")==0) k=GLFW_KEY_W;
+    else if (strcmp(key,"A")==0) k=GLFW_KEY_A;
+    else if (strcmp(key,"S")==0) k=GLFW_KEY_S;
+    else if (strcmp(key,"D")==0) k=GLFW_KEY_D;
+    else if (strcmp(key,"Space")==0) k=GLFW_KEY_SPACE;
+    else if (strcmp(key,"Shift")==0) k=GLFW_KEY_LEFT_SHIFT;
+    else if (strcmp(key,"LMB")==0) k=GLFW_MOUSE_BUTTON_LEFT;
+    else if (strcmp(key,"RMB")==0) k=GLFW_MOUSE_BUTTON_RIGHT;
+    int state = (k>=0) ? glfwGetKey(w,k) : 0;
+    if (k==GLFW_MOUSE_BUTTON_LEFT||k==GLFW_MOUSE_BUTTON_RIGHT) state = glfwGetMouseButton(w,k==GLFW_MOUSE_BUTTON_LEFT?0:1);
+    lua_pushboolean(L, state == GLFW_PRESS);
+    return 1;
+}
+
+int GameLua::lua_getMouseDelta(lua_State* L) {
+    lua_pushnumber(L, g_mouseDX);
+    lua_pushnumber(L, g_mouseDY);
+    return 2;
+}
+
+int GameLua::lua_captureMouse(lua_State* L) {
+    bool cap = lua_toboolean(L, 1);
+    g_mouseCaptured = cap;
+    GLFWwindow* w = (GLFWwindow*)g_window;
+    glfwSetInputMode(w, GLFW_CURSOR, cap ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    return 0;
+}
+
+int GameLua::lua_getDeltaTime(lua_State* L) { lua_pushnumber(L, g_deltaTime); return 1; }
+int GameLua::lua_getTime(lua_State* L) { lua_pushnumber(L, g_time); return 1; }
+
+int GameLua::lua_getPosition(lua_State* L) {
+    if (!g_objects || lua_gettop(L) < 1) return 0;
+    int idx = (int)luaL_checkinteger(L, 1);
+    if (idx < 0 || idx >= (int)g_objects->size()) return 0;
+    auto& o = (*g_objects)[idx];
+    lua_pushnumber(L, o.pos.x); lua_pushnumber(L, o.pos.y); lua_pushnumber(L, o.pos.z);
+    return 3;
+}
+int GameLua::lua_setPosition(lua_State* L) {
+    if (!g_objects || lua_gettop(L) < 4) return 0;
+    int idx = (int)luaL_checkinteger(L, 1);
+    if (idx < 0 || idx >= (int)g_objects->size()) return 0;
+    auto& o = (*g_objects)[idx];
+    o.pos.x = (float)luaL_checknumber(L, 2);
+    o.pos.y = (float)luaL_checknumber(L, 3);
+    o.pos.z = (float)luaL_checknumber(L, 4);
+    return 0;
+}
+int GameLua::lua_getRotation(lua_State* L) {
+    if (!g_objects || lua_gettop(L) < 1) return 0;
+    int idx = (int)luaL_checkinteger(L, 1);
+    if (idx < 0 || idx >= (int)g_objects->size()) return 0;
+    auto& o = (*g_objects)[idx];
+    lua_pushnumber(L, o.rot.x); lua_pushnumber(L, o.rot.y); lua_pushnumber(L, o.rot.z);
+    return 3;
+}
+int GameLua::lua_setRotation(lua_State* L) {
+    if (!g_objects || lua_gettop(L) < 4) return 0;
+    int idx = (int)luaL_checkinteger(L, 1);
+    if (idx < 0 || idx >= (int)g_objects->size()) return 0;
+    auto& o = (*g_objects)[idx];
+    o.rot.x = (float)luaL_checknumber(L, 2);
+    o.rot.y = (float)luaL_checknumber(L, 3);
+    o.rot.z = (float)luaL_checknumber(L, 4);
+    return 0;
+}
+int GameLua::lua_getScale(lua_State* L) {
+    if (!g_objects || lua_gettop(L) < 1) return 0;
+    int idx = (int)luaL_checkinteger(L, 1);
+    if (idx < 0 || idx >= (int)g_objects->size()) return 0;
+    auto& o = (*g_objects)[idx];
+    lua_pushnumber(L, o.scale.x); lua_pushnumber(L, o.scale.y); lua_pushnumber(L, o.scale.z);
+    return 3;
+}
+int GameLua::lua_setScale(lua_State* L) {
+    if (!g_objects || lua_gettop(L) < 4) return 0;
+    int idx = (int)luaL_checkinteger(L, 1);
+    if (idx < 0 || idx >= (int)g_objects->size()) return 0;
+    auto& o = (*g_objects)[idx];
+    o.scale.x = (float)luaL_checknumber(L, 2);
+    o.scale.y = (float)luaL_checknumber(L, 3);
+    o.scale.z = (float)luaL_checknumber(L, 4);
+    return 0;
+}
+int GameLua::lua_findObject(lua_State* L) { if (!g_objects) { lua_pushinteger(L, -1); return 1; }
+    const char* name = luaL_checkstring(L, 1);
+    for (int i = 0; i < (int)g_objects->size(); i++) {
+        if ((*g_objects)[i].name == name) { lua_pushinteger(L, i); return 1; }
+    }
+    lua_pushinteger(L, -1);
+    return 1;
+}
+
+// Camera � ���� ��������, ��������� � gameCamera � main.cpp
+extern float g_camPosX, g_camPosY, g_camPosZ;
+extern float g_camYaw, g_camPitch;
+int GameLua::lua_getCameraPos(lua_State* L) {
+    lua_pushnumber(L, g_camPosX); lua_pushnumber(L, g_camPosY); lua_pushnumber(L, g_camPosZ);
+    return 3;
+}
+int GameLua::lua_setCameraPos(lua_State* L) {
+    g_camPosX = (float)luaL_checknumber(L, 1);
+    g_camPosY = (float)luaL_checknumber(L, 2);
+    g_camPosZ = (float)luaL_checknumber(L, 3);
+    return 0;
+}
+int GameLua::lua_getCameraRot(lua_State* L) {
+    lua_pushnumber(L, g_camYaw); lua_pushnumber(L, g_camPitch);
+    return 2;
+}
+int GameLua::lua_setCameraRot(lua_State* L) {
+    g_camYaw   = (float)luaL_checknumber(L, 1);
+    g_camPitch = (float)luaL_checknumber(L, 2);
+    return 0;
+}
+
+
+int GameLua::lua_lookAt(lua_State* L) {
+    glm::vec3 t((float)luaL_checknumber(L,1),(float)luaL_checknumber(L,2),(float)luaL_checknumber(L,3));
+    glm::vec3 p(g_camPosX,g_camPosY,g_camPosZ);
+    glm::vec3 d = t - p; if (glm::length(d) > 1e-4f) g_camFront = glm::normalize(d);
+    return 0;
+}
+int GameLua::lua_createObject(lua_State* L){
+    if(!g_objects){lua_pushinteger(L,-1);return 1;}
+    const char* t=luaL_optstring(L,1,"cube"); const char* nm=luaL_optstring(L,2,"Block");
+    SceneObject o; o.name=nm; std::string ts=t;
+    o.type = ts=="sphere"?PrimitiveType::Sphere : ts=="plane"?PrimitiveType::Plane : ts=="capsule"?PrimitiveType::Capsule : PrimitiveType::Cube;
+    g_objects->push_back(o); lua_pushinteger(L,(int)g_objects->size()-1); return 1;
+}
+int GameLua::lua_destroyObject(lua_State* L){ int i=(int)luaL_checkinteger(L,1); if(g_objects&&i>=0&&i<(int)g_objects->size()) (*g_objects)[i].active=false; return 0; }
+int GameLua::lua_setColorObj(lua_State* L){ int i=(int)luaL_checkinteger(L,1); float r=(float)luaL_checknumber(L,2),g2=(float)luaL_checknumber(L,3),b=(float)luaL_checknumber(L,4); if(g_objects&&i>=0&&i<(int)g_objects->size()) (*g_objects)[i].color=glm::vec4(r,g2,b,1); return 0; }
+int GameLua::lua_setTextureObj(lua_State* L){ int i=(int)luaL_checkinteger(L,1); const char* p=luaL_checkstring(L,2); std::string s=p; namespace fsx=std::filesystem; if(!fsx::exists(s)){ const char* pre[]={"project/","../","../../","../../project/","../project/"}; for(auto p:pre){ if(fsx::exists(p+s)){ s=p+s; break; } } } if(g_objects&&i>=0&&i<(int)g_objects->size()){ auto& o=(*g_objects)[i]; if(o.materials.empty()) o.materials.push_back(Material()); o.materials[0].texturePath=s; static std::map<std::string,GLuint> texCache; GLuint t; auto it=texCache.find(s); if(it!=texCache.end()){t=it->second;} else {t=VE::LoadTextureRaw(s); if(t){glBindTexture(GL_TEXTURE_2D,t); glGenerateMipmap(GL_TEXTURE_2D); glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);} texCache[s]=t;} if(t){o.materials[0].textureID=t; o.textureID=t;} } return 0; }
+
+
+
+
+int GameLua::lua_setActiveObj(lua_State* L){ int i=(int)luaL_checkinteger(L,1); int a=lua_toboolean(L,2); if(g_objects&&i>=0&&i<(int)g_objects->size()) (*g_objects)[i].active=(a!=0); return 0; }
+
+
+
+
+int GameLua::lua_setTiling(lua_State* L){ int i=(int)luaL_checkinteger(L,1); float u=(float)luaL_checknumber(L,2), v=(float)luaL_checknumber(L,3); if(g_objects&&i>=0&&i<(int)g_objects->size()&&!(*g_objects)[i].materials.empty()){ (*g_objects)[i].materials[0].tilingX=u; (*g_objects)[i].materials[0].tilingY=v; } return 0; }
+int GameLua::lua_setInstanced(lua_State* L){ int i=(int)luaL_checkinteger(L,1); int a=lua_toboolean(L,2); if(g_objects&&i>=0&&i<(int)g_objects->size()) (*g_objects)[i].instanced=(a!=0); return 0; }
+
+static int lua_instAdd(lua_State* L){ const char* p=luaL_checkstring(L,1); float x=(float)luaL_checknumber(L,2),y=(float)luaL_checknumber(L,3),z=(float)luaL_checknumber(L,4),sx=(float)luaL_checknumber(L,5),sy=(float)luaL_checknumber(L,6),sz=(float)luaL_checknumber(L,7),u=(float)luaL_checknumber(L,8),v=(float)luaL_checknumber(L,9); std::string s=p; namespace fsx=std::filesystem; if(!fsx::exists(s)){ const char* pre[]={"project/","../","../../","../../project/","../project/"}; for(auto p:pre){ if(fsx::exists(p+s)){ s=p+s; break; } } } static std::map<std::string,GLuint> tcache; GLuint t; auto it=tcache.find(s); if(it!=tcache.end()){t=it->second;} else {t=VE::LoadTextureRaw(s); if(t){glBindTexture(GL_TEXTURE_2D,t); glGenerateMipmap(GL_TEXTURE_2D); glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);} tcache[s]=t;} lua_pushinteger(L, VE::InstanceRenderer::Get().Add(t, glm::vec3(x,y,z), glm::vec3(sx,sy,sz), glm::vec2(u,v))); return 1; }
+static int lua_instRemove(lua_State* L){ VE::InstanceRenderer::Get().Remove((int)luaL_checkinteger(L,1)); return 0; }
+static int lua_instSetActive(lua_State* L){ VE::InstanceRenderer::Get().SetActive((int)luaL_checkinteger(L,1), lua_toboolean(L,2)!=0); return 0; }
+static int lua_instClear(lua_State* L){ VE::InstanceRenderer::Get().Clear(); return 0; }
+
+int VE_LuaInstAdd(lua_State* L) { return lua_instAdd(L); }
+int VE_LuaInstRemove(lua_State* L) { return lua_instRemove(L); }
+int VE_LuaInstSetActive(lua_State* L) { return lua_instSetActive(L); }
+int VE_LuaInstClear(lua_State* L) { return lua_instClear(L); }
+
+
+
+
+
+
+
+int GameLua::lua_setEmissive(lua_State* L){ int i=(int)luaL_checkinteger(L,1); float r=(float)luaL_checknumber(L,2),g2=(float)luaL_checknumber(L,3),b=(float)luaL_checknumber(L,4); if(g_objects&&i>=0&&i<(int)g_objects->size()){ if((*g_objects)[i].materials.empty()) (*g_objects)[i].materials.push_back(Material()); (*g_objects)[i].materials[0].emissiveColor=glm::vec3(r,g2,b); } return 0; }
+int GameLua::lua_getDistance(lua_State* L){ int i1=(int)luaL_checkinteger(L,1),i2=(int)luaL_checkinteger(L,2); if(!g_objects||i1<0||i1>=(int)g_objects->size()||i2<0||i2>=(int)g_objects->size()){lua_pushnumber(L,1e9);return 1;} lua_pushnumber(L, glm::length((*g_objects)[i1].pos - (*g_objects)[i2].pos)); return 1; }
+int GameLua::lua_getObjectPos(lua_State* L){ int i=(int)luaL_checkinteger(L,1); if(!g_objects||i<0||i>=(int)g_objects->size()){lua_pushnumber(L,0);lua_pushnumber(L,0);lua_pushnumber(L,0);return 3;} glm::vec3 p=(*g_objects)[i].pos; lua_pushnumber(L,p.x); lua_pushnumber(L,p.y); lua_pushnumber(L,p.z); return 3; }
+int GameLua::lua_hudSetText(lua_State* L){ g_hudText = luaL_checkstring(L,1); return 0; }

@@ -1,5 +1,5 @@
-#pragma once
-// ── Material: цвет/текстура/тайлинг/слои + кисть для покраски маски (вынесено из main.cpp) ──
+﻿#pragma once
+// в”Ђв”Ђ Material: С†РІРµС‚/С‚РµРєСЃС‚СѓСЂР°/С‚Р°Р№Р»РёРЅРі/СЃР»РѕРё + РєРёСЃС‚СЊ РґР»СЏ РїРѕРєСЂР°СЃРєРё РјР°СЃРєРё (РІС‹РЅРµСЃРµРЅРѕ РёР· main.cpp) в”Ђв”Ђ
 
 struct Material {
     std::string name = "Material";
@@ -15,12 +15,17 @@ struct Material {
     GLuint      layer2TextureID = 0;
     float       layer2TilingX = 1.f, layer2TilingY = 1.f;
     std::string maskTexturePath;
+    std::string normalMapPath;
+    std::string emissiveMapPath;
+    glm::vec3 emissiveColor = glm::vec3(0.0f);
+    GLuint normalMapTextureID = 0;
+    GLuint emissiveMapTextureID = 0;
     GLuint      maskTextureID = 0;
-    std::vector<unsigned char> maskPixels; // CPU-копия маски для рисования (grayscale), пусто если маска — обычный файл
+    std::vector<unsigned char> maskPixels; // CPU-РєРѕРїРёСЏ РјР°СЃРєРё РґР»СЏ СЂРёСЃРѕРІР°РЅРёСЏ (grayscale), РїСѓСЃС‚Рѕ РµСЃР»Рё РјР°СЃРєР° вЂ” РѕР±С‹С‡РЅС‹Р№ С„Р°Р№Р»
     int maskPixelSize = 0;
 };
 
-// ── Сохранить материал в .mat файл (простой текстовый формат) ──
+// в”Ђв”Ђ РЎРѕС…СЂР°РЅРёС‚СЊ РјР°С‚РµСЂРёР°Р» РІ .mat С„Р°Р№Р» (РїСЂРѕСЃС‚РѕР№ С‚РµРєСЃС‚РѕРІС‹Р№ С„РѕСЂРјР°С‚) в”Ђв”Ђ
 inline void SaveMaterial(const std::string& path, const Material& m) {
     std::ofstream f(path);
     f << "name=" << m.name << "\n";
@@ -32,11 +37,14 @@ inline void SaveMaterial(const std::string& path, const Material& m) {
     f << "tilingY=" << m.tilingY << "\n";
     f << "layer2Texture=" << m.layer2TexturePath << "\n";
     f << "layer2TilingX=" << m.layer2TilingX << "\n";
-    f << "layer2TilingY=" << m.layer2TilingY << "\n";
+    f << "layer2TilingY=" << m.layer2TilingY << "\n";f << "normalMap=" << m.normalMapPath << "\n";
+f << "emissiveMap=" << m.emissiveMapPath << "\n";
+f << "emissiveColor=" << m.emissiveColor.r << "," << m.emissiveColor.g << "," << m.emissiveColor.b << "\n";
+
     f << "maskTexture=" << m.maskTexturePath << "\n";
 }
 
-// ── Загрузить материал из .mat файла ──
+// в”Ђв”Ђ Р—Р°РіСЂСѓР·РёС‚СЊ РјР°С‚РµСЂРёР°Р» РёР· .mat С„Р°Р№Р»Р° в”Ђв”Ђ
 inline Material LoadMaterial(const std::string& path) {
     Material m;
     m.assetPath = path;
@@ -65,7 +73,10 @@ inline Material LoadMaterial(const std::string& path) {
             if (!val.empty() && fs::exists(val)) m.layer2TextureID = VE::LoadTexture(val);
         }
         else if (key=="layer2TilingX") m.layer2TilingX = std::stof(val);
-        else if (key=="layer2TilingY") m.layer2TilingY = std::stof(val);
+        else if (key=="layer2TilingY") m.layer2TilingY = std::stof(val);else if (key=="normalMap") { m.normalMapPath = val; if (!val.empty() && fs::exists(val)) m.normalMapTextureID = VE::LoadTexture(val); }
+else if (key=="emissiveMap") { m.emissiveMapPath = val; if (!val.empty() && fs::exists(val)) m.emissiveMapTextureID = VE::LoadTexture(val); }
+else if (key=="emissiveColor") { std::stringstream ss(val); char c; ss >> m.emissiveColor.r >> c >> m.emissiveColor.g >> c >> m.emissiveColor.b; }
+
         else if (key=="maskTexture") {
             m.maskTexturePath = val;
             if (!val.empty() && fs::exists(val)) m.maskTextureID = VE::LoadTexture(val);
@@ -74,9 +85,9 @@ inline Material LoadMaterial(const std::string& path) {
     return m;
 }
 
-// ═══════════════════════════════════════════════════════
-//   КИСТЬ ДЛЯ РИСОВАНИЯ МАСКИ (Layer2 blend mask), без внешних либ
-// ═══════════════════════════════════════════════════════
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+//   РљРРЎРўР¬ Р”Р›РЇ Р РРЎРћР’РђРќРРЇ РњРђРЎРљР (Layer2 blend mask), Р±РµР· РІРЅРµС€РЅРёС… Р»РёР±
+// в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 struct MeshTri { glm::vec3 p0,p1,p2; glm::vec2 uv0,uv1,uv2; };
 
 inline const std::vector<MeshTri>& GetCubeTrisForPaint() {
@@ -190,4 +201,7 @@ inline bool LoadMaskPGM(const std::string& path, std::vector<unsigned char>& out
     f.read((char*)outPixels.data(), outPixels.size());
     return true;
 }
+
+
+
 

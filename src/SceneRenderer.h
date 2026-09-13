@@ -1,9 +1,20 @@
 ﻿#pragma once
+#include <map>
 #include "EditorGlobals.h"
 #include "Core/DebugDraw.h"
 #include "Core/ParticleSystem.h"
 #include "ShadowMap.h"
+#include "CSM.h"
+#include "InstanceRenderer.h"
+
+static GLint ULocCached(GLuint prog, const char* name){
+    static std::map<std::pair<GLuint,std::string>,GLint> c;
+    auto k = std::make_pair(prog, std::string(name));
+    auto it = c.find(k); if (it != c.end()) return it->second;
+    GLint l = glGetUniformLocation(prog, name); c[k] = l; return l;
+}
 extern VE::ShadowMap* g_ShadowMap;
+extern CSM* g_CSM;
 extern VE::Shader* g_DepthShader;
 extern VE::Shader* g_DepthSkinnedShader;
 extern glm::mat4 g_ShadowLightSpace;
@@ -79,8 +90,8 @@ void drawRing(unsigned int sid,glm::vec3 center,int axis,float gs,glm::vec4 col,
     glBufferData(GL_ARRAY_BUFFER,pts.size()*sizeof(float),pts.data(),GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);glEnableVertexAttribArray(0);
     glm::mat4 m=glm::translate(glm::mat4(1),center);
-    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp*m));
-    glUniform4f(glGetUniformLocation(sid,"color"),col.r,col.g,col.b,col.a);
+    glUniformMatrix4fv(ULocCached(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp*m));
+    glUniform4f(ULocCached(sid,"color"),col.r,col.g,col.b,col.a);
     glLineWidth(2.5f);glDrawArrays(GL_LINE_STRIP,0,SEG+1);
     glDeleteVertexArrays(1,&rVAO);glDeleteBuffers(1,&rVBO);
 }
@@ -100,8 +111,8 @@ void drawSelectionBox(unsigned int sid, const glm::mat4& m, const glm::mat4& vp,
     glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER,vbo);
     glBufferData(GL_ARRAY_BUFFER, v.size()*sizeof(float), v.data(), GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0); glEnableVertexAttribArray(0);
-    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
-    glUniform4f(glGetUniformLocation(sid,"color"),col.r,col.g,col.b,col.a);
+    glUniformMatrix4fv(ULocCached(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
+    glUniform4f(ULocCached(sid,"color"),col.r,col.g,col.b,col.a);
     glLineWidth(1.5f);
     glDrawArrays(GL_LINES,0,24);
     glDeleteVertexArrays(1,&vao); glDeleteBuffers(1,&vbo);
@@ -135,9 +146,50 @@ void drawCameraFrustum(GLuint sid, const glm::vec3& pos, const glm::vec3& rot, f
     glBufferData(GL_ARRAY_BUFFER, f.size()*sizeof(float), f.data(), GL_DYNAMIC_DRAW);
     glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
     glEnableVertexAttribArray(0);
-    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
+    glUniformMatrix4fv(ULocCached(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
     glm::vec4 col = isSel ? glm::vec4(1.f,0.9f,0.3f,1.f) : glm::vec4(0.45f,0.75f,1.f,0.9f);
-    glUniform4f(glGetUniformLocation(sid,"color"),col.r,col.g,col.b,col.a);
+    glUniform4f(ULocCached(sid,"color"),col.r,col.g,col.b,col.a);
+    glLineWidth(1.5f);
+    glDrawArrays(GL_LINES,0,(GLsizei)(f.size()/3));
+    glDeleteVertexArrays(1,&vao); glDeleteBuffers(1,&vbo);
+}
+
+void drawLightBulb(GLuint sid, const glm::vec3& pos, float size, bool isSel, const glm::mat4& vp) {
+    float r = size * 0.5f;
+    std::vector<float> f;
+    const int SEG = 16;
+    auto addCircle = [&](const glm::vec3& a, const glm::vec3& b) {
+        for (int i = 0; i < SEG; i++) {
+            float a1 = 2.f*3.14159265f*(float)i/SEG;
+            float a2 = 2.f*3.14159265f*(float)(i+1)/SEG;
+            glm::vec3 v1 = pos + a*cosf(a1)*r + b*sinf(a1)*r;
+            glm::vec3 v2 = pos + a*cosf(a2)*r + b*sinf(a2)*r;
+            f.insert(f.end(), {v1.x,v1.y,v1.z, v2.x,v2.y,v2.z});
+        }
+    };
+    addCircle(glm::vec3(1,0,0), glm::vec3(0,1,0));
+    addCircle(glm::vec3(1,0,0), glm::vec3(0,0,1));
+    addCircle(glm::vec3(0,1,0), glm::vec3(0,0,1));
+    float rayLen = r * 1.8f;
+    glm::vec3 rays[] = {
+        glm::vec3(1,0,0), glm::vec3(-1,0,0), glm::vec3(0,1,0), glm::vec3(0,-1,0),
+        glm::vec3(0,0,1), glm::vec3(0,0,-1),
+        glm::vec3(0.707f,0.707f,0), glm::vec3(0.707f,-0.707f,0)
+    };
+    for (auto& ray : rays) {
+        glm::vec3 v1 = pos + ray * r;
+        glm::vec3 v2 = pos + ray * rayLen;
+        f.insert(f.end(), {v1.x,v1.y,v1.z, v2.x,v2.y,v2.z});
+    }
+    GLuint vao=0, vbo=0;
+    glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo);
+    glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER,vbo);
+    glBufferData(GL_ARRAY_BUFFER, f.size()*sizeof(float), f.data(), GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
+    glEnableVertexAttribArray(0);
+    glUniformMatrix4fv(ULocCached(sid,"mvp"),1,GL_FALSE,glm::value_ptr(vp));
+    glm::vec4 col = isSel ? glm::vec4(1.f,0.9f,0.3f,1.f) : glm::vec4(1.f,0.85f,0.1f,0.9f);
+    glUniform4f(ULocCached(sid,"color"),col.r,col.g,col.b,col.a);
     glLineWidth(1.5f);
     glDrawArrays(GL_LINES,0,(GLsizei)(f.size()/3));
     glDeleteVertexArrays(1,&vao); glDeleteBuffers(1,&vbo);
@@ -154,13 +206,13 @@ void drawBillboard(unsigned int sid,glm::vec3 pos,glm::vec4 col,float size,const
     glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,vbo);
     glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
     glEnableVertexAttribArray(0);
-    glUniformMatrix4fv(glGetUniformLocation(sid,"mvp"),1,GL_FALSE,glm::value_ptr(proj*view*glm::mat4(1)));
+    glUniformMatrix4fv(ULocCached(sid,"mvp"),1,GL_FALSE,glm::value_ptr(proj*view*glm::mat4(1)));
 
     auto upload=[&](const std::vector<float>& v){
         glBufferData(GL_ARRAY_BUFFER,v.size()*sizeof(float),v.data(),GL_DYNAMIC_DRAW);
     };
     auto setColor=[&](glm::vec4 c){
-        glUniform4f(glGetUniformLocation(sid,"color"),c.r,c.g,c.b,c.a);
+        glUniform4f(ULocCached(sid,"color"),c.r,c.g,c.b,c.a);
     };
 
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
@@ -305,12 +357,14 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
         GLint prevFBO=0; int vp[4];
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
         glGetIntegerv(GL_VIEWPORT, vp);
-        g_ShadowLightSpace = g_ShadowMap->GetLightSpaceMatrix(dirL);
+        glm::vec3 camT = glm::vec3(glm::inverse(view)[3]); camT.y = 0.0f;
+        g_ShadowLightSpace = g_ShadowMap->GetLightSpaceMatrix(dirL, camT);
         glBindFramebuffer(GL_FRAMEBUFFER, g_ShadowMap->FBO);
         glViewport(0,0,g_ShadowMap->width,g_ShadowMap->height);
         glClear(GL_DEPTH_BUFFER_BIT);
         for(int si=0;si<(int)objects.size();si++){
             if(!objects[si].active) continue;
+            if(objects[si].instanced) continue;
             if(si==excludeIndex) continue;
             auto& sobj=objects[si];
             if(sobj.type==PrimitiveType::Empty) continue;
@@ -323,14 +377,14 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
             bool skin=(sobj.type==PrimitiveType::Model3D && sobj.model && sobj.model->hasSkeleton && sobj.animIndex>=0);
             VE::Shader* ds=(skin&&g_DepthSkinnedShader)?g_DepthSkinnedShader:g_DepthShader;
             ds->Use();
-            glUniformMatrix4fv(glGetUniformLocation(ds->ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
+            glUniformMatrix4fv(ULocCached(ds->ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
             if(skin){
                 auto bm=sobj.model->GetBoneMatrices(sobj.animIndex,sobj.animTime,sobj.animLoop);
                 int n=std::min((int)bm.size(),VE::MAX_BONES);
                 for(int b=0;b<n;b++){std::string u="boneMatrices["+std::to_string(b)+"]";
-                    glUniformMatrix4fv(glGetUniformLocation(ds->ID,u.c_str()),1,GL_FALSE,glm::value_ptr(bm[b]));}
+                    glUniformMatrix4fv(ULocCached(ds->ID,u.c_str()),1,GL_FALSE,glm::value_ptr(bm[b]));}
             }
-            glUniformMatrix4fv(glGetUniformLocation(ds->ID,"model"),1,GL_FALSE,glm::value_ptr(sm));
+            glUniformMatrix4fv(ULocCached(ds->ID,"model"),1,GL_FALSE,glm::value_ptr(sm));
             drawMesh(sobj,cubeVAO,sph,cyl,pyr,cap,pln);
         }
         glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
@@ -338,52 +392,53 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
     }
 
     shader.Use();
-    glUniformMatrix4fv(glGetUniformLocation(shader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(shader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-    glUniform3f(glGetUniformLocation(shader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
-    glUniform3f(glGetUniformLocation(shader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
-    glUniform1f(glGetUniformLocation(shader.ID,"fogDensity"),g_FogDensity);
-    glUniform3f(glGetUniformLocation(shader.ID,"sunDir"),dirL.x,dirL.y,dirL.z);
-    glUniform3f(glGetUniformLocation(shader.ID,"sunColor"),colL.x,colL.y,colL.z);
-    glUniform1f(glGetUniformLocation(shader.ID,"sunIntensity"),intL);
-    glUniform3f(glGetUniformLocation(shader.ID,"ambientColor"),ambCol.r,ambCol.g,ambCol.b);
-    glUniformMatrix4fv(glGetUniformLocation(shader.ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
-    glActiveTexture(GL_TEXTURE7);glBindTexture(GL_TEXTURE_2D,g_ShadowMap?g_ShadowMap->depthMap:0);glUniform1i(glGetUniformLocation(shader.ID,"shadowMap"),7);glActiveTexture(GL_TEXTURE0);
+    glUniformMatrix4fv(ULocCached(shader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
+    glUniformMatrix4fv(ULocCached(shader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
+    glUniform3f(ULocCached(shader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
+    glUniform3f(ULocCached(shader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
+    glUniform1f(ULocCached(shader.ID,"fogDensity"),g_FogDensity);
+    glUniform3f(ULocCached(shader.ID,"sunDir"),dirL.x,dirL.y,dirL.z);
+    glUniform3f(ULocCached(shader.ID,"sunColor"),colL.x,colL.y,colL.z);
+    glUniform1f(ULocCached(shader.ID,"sunIntensity"),intL);
+    glUniform3f(ULocCached(shader.ID,"ambientColor"),ambCol.r,ambCol.g,ambCol.b);
+    glUniformMatrix4fv(ULocCached(shader.ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
+    glActiveTexture(GL_TEXTURE7);glBindTexture(GL_TEXTURE_2D,g_ShadowMap?g_ShadowMap->depthMap:0);glUniform1i(ULocCached(shader.ID,"shadowMap"),7);glActiveTexture(GL_TEXTURE0);
     int lCount=(int)std::min(lights.size(),(size_t)8);
-    glUniform1i(glGetUniformLocation(shader.ID,"lightCount"),lCount);
+    glUniform1i(ULocCached(shader.ID,"lightCount"),lCount);
     for(int i=0;i<lCount;i++){
         std::string idx="["+std::to_string(i)+"]";
-        glUniform3f(glGetUniformLocation(shader.ID,("lightPos"+idx).c_str()),lights[i].pos.x,lights[i].pos.y,lights[i].pos.z);
-        glUniform3f(glGetUniformLocation(shader.ID,("lightColor"+idx).c_str()),lights[i].color.r,lights[i].color.g,lights[i].color.b);
-        glUniform1f(glGetUniformLocation(shader.ID,("lightIntensity"+idx).c_str()),lights[i].intensity);
-        glUniform1f(glGetUniformLocation(shader.ID,("lightRange"+idx).c_str()),lights[i].range);
+        glUniform3f(ULocCached(shader.ID,("lightPos"+idx).c_str()),lights[i].pos.x,lights[i].pos.y,lights[i].pos.z);
+        glUniform3f(ULocCached(shader.ID,("lightColor"+idx).c_str()),lights[i].color.r,lights[i].color.g,lights[i].color.b);
+        glUniform1f(ULocCached(shader.ID,("lightIntensity"+idx).c_str()),lights[i].intensity);
+        glUniform1f(ULocCached(shader.ID,("lightRange"+idx).c_str()),lights[i].range);
     }
     glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);
 
     // в”Ђв”Ђ РўРµ Р¶Рµ РѕР±С‰РёРµ uniform'С‹ (РІРёРґ/РїСЂРѕРµРєС†РёСЏ/СЃРІРµС‚/С‚СѓРјР°РЅ) РЅР°СЃС‚СЂР°РёРІР°РµРј Рё РЅР° skinned-С€РµР№РґРµСЂРµ в”Ђв”Ђ
     skinnedShader.Use();
-    glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
-    glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunDir"),dirL.x,dirL.y,dirL.z);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"sunColor"),colL.x,colL.y,colL.z);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"sunIntensity"),intL);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"ambientColor"),ambCol.r,ambCol.g,ambCol.b);
-    glUniformMatrix4fv(glGetUniformLocation(skinnedShader.ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
-    glActiveTexture(GL_TEXTURE7);glBindTexture(GL_TEXTURE_2D,g_ShadowMap?g_ShadowMap->depthMap:0);glUniform1i(glGetUniformLocation(skinnedShader.ID,"shadowMap"),7);glActiveTexture(GL_TEXTURE0);
-    glUniform3f(glGetUniformLocation(skinnedShader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
-    glUniform1f(glGetUniformLocation(skinnedShader.ID,"fogDensity"),g_FogDensity);
-    glUniform1i(glGetUniformLocation(skinnedShader.ID,"lightCount"),lCount);
+    glUniformMatrix4fv(ULocCached(skinnedShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
+    glUniformMatrix4fv(ULocCached(skinnedShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
+    glUniform3f(ULocCached(skinnedShader.ID,"viewPos"),cam.Position.x,cam.Position.y,cam.Position.z);
+    glUniform3f(ULocCached(skinnedShader.ID,"sunDir"),dirL.x,dirL.y,dirL.z);
+    glUniform3f(ULocCached(skinnedShader.ID,"sunColor"),colL.x,colL.y,colL.z);
+    glUniform1f(ULocCached(skinnedShader.ID,"sunIntensity"),intL);
+    glUniform3f(ULocCached(skinnedShader.ID,"ambientColor"),ambCol.r,ambCol.g,ambCol.b);
+    glUniformMatrix4fv(ULocCached(skinnedShader.ID,"lightSpaceMatrix"),1,GL_FALSE,glm::value_ptr(g_ShadowLightSpace));
+    glActiveTexture(GL_TEXTURE7);glBindTexture(GL_TEXTURE_2D,g_ShadowMap?g_ShadowMap->depthMap:0);glUniform1i(ULocCached(skinnedShader.ID,"shadowMap"),7);glActiveTexture(GL_TEXTURE0);
+    glUniform3f(ULocCached(skinnedShader.ID,"fogColor"),g_FogColor.x,g_FogColor.y,g_FogColor.z);
+    glUniform1f(ULocCached(skinnedShader.ID,"fogDensity"),g_FogDensity);
+    glUniform1i(ULocCached(skinnedShader.ID,"lightCount"),lCount);
     for(int i=0;i<lCount;i++){
         std::string idx="["+std::to_string(i)+"]";
-        glUniform3f(glGetUniformLocation(skinnedShader.ID,("lightPos"+idx).c_str()),lights[i].pos.x,lights[i].pos.y,lights[i].pos.z);
-        glUniform3f(glGetUniformLocation(skinnedShader.ID,("lightColor"+idx).c_str()),lights[i].color.r,lights[i].color.g,lights[i].color.b);
-        glUniform1f(glGetUniformLocation(skinnedShader.ID,("lightIntensity"+idx).c_str()),lights[i].intensity);
-        glUniform1f(glGetUniformLocation(skinnedShader.ID,("lightRange"+idx).c_str()),lights[i].range);
+        glUniform3f(ULocCached(skinnedShader.ID,("lightPos"+idx).c_str()),lights[i].pos.x,lights[i].pos.y,lights[i].pos.z);
+        glUniform3f(ULocCached(skinnedShader.ID,("lightColor"+idx).c_str()),lights[i].color.r,lights[i].color.g,lights[i].color.b);
+        glUniform1f(ULocCached(skinnedShader.ID,("lightIntensity"+idx).c_str()),lights[i].intensity);
+        glUniform1f(ULocCached(skinnedShader.ID,("lightRange"+idx).c_str()),lights[i].range);
     }
     shader.Use();
     for(int i=0;i<(int)objects.size();i++){
         if(!objects[i].active) continue;
+        if(objects[i].instanced) continue;
         if(i==excludeIndex) continue; // СЃРІРѕС‘ С‚РµР»Рѕ РЅРµ СЂРёСЃСѓРµРј РѕС‚ РїРµСЂРІРѕРіРѕ Р»РёС†Р°
         auto& obj=objects[i];
         if(scene.IsAlive(obj.ecsID)){auto& t=scene.GetTransform(obj.ecsID);t.Position=obj.pos;t.Rotation=obj.rot;t.Scale=obj.scale;}
@@ -406,21 +461,23 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
             int n = std::min((int)boneMats.size(), VE::MAX_BONES);
             for (int b=0;b<n;b++) {
                 std::string u = "boneMatrices["+std::to_string(b)+"]";
-                glUniformMatrix4fv(glGetUniformLocation(activeShader.ID,u.c_str()),1,GL_FALSE,glm::value_ptr(boneMats[b]));
+                glUniformMatrix4fv(ULocCached(activeShader.ID,u.c_str()),1,GL_FALSE,glm::value_ptr(boneMats[b]));
             }
         }
 
-        glUniformMatrix4fv(glGetUniformLocation(activeShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
-        glUniform3f(glGetUniformLocation(activeShader.ID,"objectColor"),obj.color.r,obj.color.g,obj.color.b);
+        glUniformMatrix4fv(ULocCached(activeShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
+        glUniform3f(ULocCached(activeShader.ID,"objectColor"),obj.color.r,obj.color.g,obj.color.b);
         GLuint texToBind=(obj.textureID!=0)?obj.textureID:VE::GetWhiteTexture();
         glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texToBind);
-        glUniform1i(glGetUniformLocation(activeShader.ID,"uTexture"),0);
-        glUniform1i(glGetUniformLocation(activeShader.ID,"useTexture"),obj.textureID!=0);
+        glUniform1i(ULocCached(activeShader.ID,"uTexture"),0);
+        glUniform1i(ULocCached(activeShader.ID,"useTexture"),obj.textureID!=0);
 
         glm::vec2 tiling(1.f,1.f);
         bool hasLayer2 = false, hasMask = false;
         GLuint layer2Tex = 0, maskTex = 0;
         glm::vec2 layer2Tiling(1.f,1.f);
+        GLuint normalMapTex = 0, emissiveMapTex = 0; glm::vec3 emissiveColor(0.0f);
+
         if (!obj.materials.empty()) {
             auto& m0 = obj.materials[0];
             tiling = { m0.tilingX, m0.tilingY };
@@ -429,22 +486,37 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
             layer2Tex = m0.layer2TextureID;
             maskTex   = m0.maskTextureID;
             layer2Tiling = { m0.layer2TilingX, m0.layer2TilingY };
+
+            normalMapTex = m0.normalMapTextureID;
+
+            emissiveMapTex = m0.emissiveMapTextureID;
+
+            emissiveColor = m0.emissiveColor;
         }
-        glUniform2f(glGetUniformLocation(activeShader.ID,"uTiling"), tiling.x, tiling.y);
-        glUniform1i(glGetUniformLocation(activeShader.ID,"useLayer2"), hasLayer2 && hasMask);
-        glUniform1i(glGetUniformLocation(activeShader.ID,"useMask"),   hasLayer2 && hasMask);
+        glUniform2f(ULocCached(activeShader.ID,"uTiling"), tiling.x, tiling.y);
+        glUniform1i(ULocCached(activeShader.ID,"uNormalMap"), 5);
+        glUniform1i(ULocCached(activeShader.ID,"uEmissiveMap"), 6);
+        glUniform3fv(ULocCached(activeShader.ID,"uEmissiveColor"),1,glm::value_ptr(emissiveColor));
+        glUniform1i(ULocCached(activeShader.ID,"useNormalMap"), normalMapTex != 0);
+        glUniform1i(ULocCached(activeShader.ID,"useEmissiveMap"), emissiveMapTex != 0);
+        glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, normalMapTex);
+        glActiveTexture(GL_TEXTURE6); glBindTexture(GL_TEXTURE_2D, emissiveMapTex);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(ULocCached(activeShader.ID,"useLayer2"), hasLayer2 && hasMask);
+        glUniform1i(ULocCached(activeShader.ID,"useMask"),   hasLayer2 && hasMask);
         if (hasLayer2 && hasMask) {
             glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, layer2Tex);
-            glUniform1i(glGetUniformLocation(activeShader.ID,"uLayer2Texture"), 1);
-            glUniform2f(glGetUniformLocation(activeShader.ID,"uLayer2Tiling"), layer2Tiling.x, layer2Tiling.y);
+            glUniform1i(ULocCached(activeShader.ID,"uLayer2Texture"), 1);
+            glUniform2f(ULocCached(activeShader.ID,"uLayer2Tiling"), layer2Tiling.x, layer2Tiling.y);
             glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, maskTex);
-            glUniform1i(glGetUniformLocation(activeShader.ID,"uMaskTexture"), 2);
+            glUniform1i(ULocCached(activeShader.ID,"uMaskTexture"), 2);
             glActiveTexture(GL_TEXTURE0);
         }
 
         drawMesh(obj,cubeVAO,sph,cyl,pyr,cap,pln);
         if (useSkinning) shader.Use(); // РІРѕР·РІСЂР°С‰Р°РµРј РѕСЃРЅРѕРІРЅРѕР№ С€РµР№РґРµСЂ РґР»СЏ СЃР»РµРґСѓСЋС‰РёС… РѕР±СЉРµРєС‚РѕРІ
     }
+    VE::InstanceRenderer::Get().Render(view, proj, dirL, colL, intL, ambCol);
     if(!isGameView&&selType==SelectionType::Object&&sel>=0&&sel<(int)objects.size()){
         auto& obj=objects[sel];
         glm::mat4 model=glm::translate(glm::mat4(1),obj.pos);
@@ -453,11 +525,11 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
         model=glm::rotate(model,glm::radians(obj.rot.z),glm::vec3(0,0,1));
         model=glm::scale(model,obj.scale);
         outlineShader.Use();
-        glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(outlineShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
-        glUniform1f(glGetUniformLocation(outlineShader.ID,"outlineSize"),0.05f);
-        glUniform4f(glGetUniformLocation(outlineShader.ID,"outlineColor"),1.0f,1.0f,1.0f,1);
+        glUniformMatrix4fv(ULocCached(outlineShader.ID,"model"),1,GL_FALSE,glm::value_ptr(model));
+        glUniformMatrix4fv(ULocCached(outlineShader.ID,"view"),1,GL_FALSE,glm::value_ptr(view));
+        glUniformMatrix4fv(ULocCached(outlineShader.ID,"projection"),1,GL_FALSE,glm::value_ptr(proj));
+        glUniform1f(ULocCached(outlineShader.ID,"outlineSize"),0.05f);
+        glUniform4f(ULocCached(outlineShader.ID,"outlineColor"),1.0f,1.0f,1.0f,1);
         drawSelectionBox(gizmoShader.ID, model, vp, glm::vec4(0.95f,0.95f,1.0f,0.9f), obj.type==PrimitiveType::Plane?glm::vec3(0.5f,0.0f,0.5f):glm::vec3(0.5f));
     }
     if(!isGameView&&showGizmos){
@@ -467,7 +539,7 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
             bool isSel=(selType==SelectionType::Light&&i==selLight);
             float d=glm::length(lights[i].pos-cam.Position);
             float iconSize=glm::clamp(d*0.10f,0.28f,1.4f);
-            drawBillboard(gizmoShader.ID,lights[i].pos,isSel?glm::vec4(1,1,0,1):glm::vec4(1,.85f,.1f,1),iconSize,view,proj,true);
+            drawLightBulb(gizmoShader.ID,lights[i].pos,iconSize,isSel,vp);
             if(isSel) drawRing(gizmoShader.ID,lights[i].pos,1,lights[i].range,glm::vec4(1,.85f,.1f,.4f),vp);
         }
         for(int i=0;i<(int)sceneCameras.size();i++){
@@ -506,8 +578,8 @@ void renderScene(std::vector<SceneObject>& objects,int sel,bool isGameView,
                     glm::vec4 col=dragAxis==(GizmoAxis)(i+1)?glm::vec4(1,1,.2f,1):cols[i];
                     glm::mat4 m=glm::translate(glm::mat4(1),gPos);
                     m=glm::rotate(m,glm::radians(rA[i]),rX[i]);m=glm::scale(m,glm::vec3(gs));
-                    glUniformMatrix4fv(glGetUniformLocation(gizmoShader.ID,"mvp"),1,GL_FALSE,glm::value_ptr(vp*m));
-                    glUniform4f(glGetUniformLocation(gizmoShader.ID,"color"),col.r,col.g,col.b,col.a);
+                    glUniformMatrix4fv(ULocCached(gizmoShader.ID,"mvp"),1,GL_FALSE,glm::value_ptr(vp*m));
+                    glUniform4f(ULocCached(gizmoShader.ID,"color"),col.r,col.g,col.b,col.a);
                     glDrawArrays(GL_TRIANGLES,2,arrowCnt-2);glLineWidth(2.f);glDrawArrays(GL_LINES,0,2);
                 }
             } else if(gizmoMode==GizmoMode::Rotate){
@@ -546,6 +618,20 @@ bool DragFloat3XYZ(const char* label,float* v,float speed=0.05f){
     ImGui::PopID();
     return changed;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
