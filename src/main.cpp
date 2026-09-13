@@ -62,6 +62,7 @@ namespace fs = std::filesystem;
 #include "UI2D.h"
 #include "UILua.h"
 #include "Core/Console.h"
+#include "Core/BuildSystem.h"
 #include "InstanceRenderer.h"
 std::vector<UIElement> uiElements;
 int selUI = -1;
@@ -297,7 +298,7 @@ int main(int argc, char** argv)
     for (int i=1;i<argc;i++) {
         std::string a = argv[i];
         if (a=="--play" && i+1<argc) {
-            g_PlayerMode = false; // player mode removed;
+            g_PlayerMode = true;
             g_PlayerScenePath = argv[i+1];
             i++;
         }
@@ -313,12 +314,12 @@ int main(int argc, char** argv)
         std::ifstream pf("player.cfg");
         std::string scenePath;
         if (pf && std::getline(pf, scenePath) && !scenePath.empty()) {
-            g_PlayerMode = false; // player mode removed;
+            g_PlayerMode = true;
             g_PlayerScenePath = scenePath;
         }
     }
 
-    g_Prefs.Load();
+    if (g_PlayerMode) { freopen("player_log.txt", "w", stdout); freopen("player_log_err.txt", "w", stderr); std::cout << "[Player] start, scene=" << g_PlayerScenePath << std::endl; } g_Prefs.Load();
     camera.Speed       = g_Prefs.camSpeed;
     camera.Sensitivity = g_Prefs.camSensitivity;
     // Init GLFW temporarily to get monitor size, Window::Create will reinit safely
@@ -1461,10 +1462,10 @@ static bool gameCameraInitialized = false;
             std::string ln;
             while (std::getline(f, ln)) if (!ln.empty() && ln[0] != '/' && ln[0] != '#') VE::Console::Get().Execute(ln);
         });
-        VE::Console::Get().AddCmd("time", "print engine time", "", [&](const std::vector<std::string>&) {
+        VE::Console::Get().AddCmd("time", "print elapsed time", "", [&](const std::vector<std::string>&) {
             VE::Console::Get().Print(VE::LogLevel::Echo, "t = " + std::to_string(glfwGetTime()));
         });
-        VE::Console::Get().AddCmd("map", "load scene (like CS2 map)", "map <scenepath>", [&](const std::vector<std::string>& a) {
+        VE::Console::Get().AddCmd("map", "load scene", "map <scenepath>", [&](const std::vector<std::string>& a) {
             if (a.size() < 2) { VE::Console::Get().Print(VE::LogLevel::Error, "usage: map <scenepath>"); return; }
             VE::SceneManager::Get().RequestLoad(a[1]);
         });
@@ -1524,8 +1525,23 @@ static bool gameCameraInitialized = false;
         VE::Console::Get().AddBool("dbg_lua", false, "lua verbose logging");
 
 
+    VE::Console::Get().AddCmd("build_game", "build standalone exe", "build_game [name]", [&](const std::vector<std::string>& a) {
+        std::string name = a.size() > 1 ? a[1] : "Game";
+        std::string currentScene = VE::SceneManager::Get().GetCurrent();
+        if (currentScene.empty()) {
+            std::string autoPath = "project/Assets/Scenes/AutoSave_" + std::to_string((int)glfwGetTime()) + ".scene";
+            SaveScene(autoPath, objects, lights, sceneCameras);
+            VE::SceneManager::Get().SetCurrent(autoPath);
+            currentScene = autoPath;
+            VE::Console::Get().Print(VE::LogLevel::Info, "Auto-saved unsaved scene to " + autoPath);
+        }
+        VE::Console::Get().Print(VE::LogLevel::Info, "Building " + name + "...");
+        VE::BuildSystem bs; bs.SetEngineRoot("project"); bool ok = bs.Build("project", currentScene, name);
+        VE::Console::Get().Print(ok ? VE::LogLevel::Info : VE::LogLevel::Error, ok ? "Build OK: project/Build/" + name + ".exe" : "Build FAILED");
+    });
     while(!window->ShouldClose())
     {
+    std::cout << "[frame] begin" << std::endl;
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
         // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
         for(auto& obj:objects){
@@ -4128,6 +4144,9 @@ glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO
 delete window;
 return 0;
 }
+
+
+
 
 
 
