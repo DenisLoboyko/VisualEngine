@@ -1,0 +1,15 @@
+[Player] start, scene=Assets\Scenes\AutoSave_7.scene
+Window created: Game (1920x1080)
+GLAD loaded successfully
+GLAD loaded successfully
+GLAD loaded successfully
+GL version: 3.3
+GLAD loaded: GL 3.3
+GLAD loaded: GL 3.3
+[log] ECS initialized — 3 entities
+[log] Engine initialized — VisualEngine v0.1
+[log] Scene loaded: Untitled
+[Audio] Initialized
+[log] Player mode: launching C:\Users\loboy\Downloads\VisualEngine\project\Build\Assets\Scenes\AutoSave_7.scene
+[log] Play
+[boot] entering main loop

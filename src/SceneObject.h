@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "Material.h"
+#include <iostream>
 // в”Ђв”Ђ SceneObject, Ray, РіРёР·РјРѕ-С…РёС‚С‚РµСЃС‚С‹ (РІС‹РЅРµСЃРµРЅРѕ РёР· main.cpp) в”Ђв”Ђ
 
 struct SceneObject {
@@ -39,7 +40,7 @@ struct SavedTransform { glm::vec3 pos,rot,scale; };
 
 struct ConsoleEntry { std::string msg; int level; };
 std::vector<ConsoleEntry> consoleLog;
-void logInfo (const std::string& m){ consoleLog.push_back({m,0}); }
+void logInfo (const std::string& m){ std::cout << "[log] " << m << std::endl; consoleLog.push_back({m,0}); }
 void logWarn (const std::string& m){ consoleLog.push_back({m,1}); }
 void logError(const std::string& m){ consoleLog.push_back({m,2}); }
 
@@ -98,6 +99,7 @@ bool gizmoArrowHit(const Ray& ray,glm::vec3 op,glm::vec3 ax,float gs,float& t){
     glm::vec3 end=op+ax*gs;
     return rayAABB(ray,(glm::min(op,end)+glm::max(op,end))*.5f,(glm::max(op,end)-glm::min(op,end))*.5f+0.08f*gs,t);
 }
+
 
 
 

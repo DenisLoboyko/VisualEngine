@@ -1,0 +1,6 @@
+Skybox texture failed: C:\Users\loboy\Downloads\VisualEngine\project\Build\assets\skybox\right.jpg
+Skybox texture failed: C:\Users\loboy\Downloads\VisualEngine\project\Build\assets\skybox\left.jpg
+Skybox texture failed: C:\Users\loboy\Downloads\VisualEngine\project\Build\assets\skybox\top.jpg
+Skybox texture failed: C:\Users\loboy\Downloads\VisualEngine\project\Build\assets\skybox\bottom.jpg
+Skybox texture failed: C:\Users\loboy\Downloads\VisualEngine\project\Build\assets\skybox\front.jpg
+Skybox texture failed: C:\Users\loboy\Downloads\VisualEngine\project\Build\assets\skybox\back.jpg
