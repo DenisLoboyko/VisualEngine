@@ -1542,6 +1542,10 @@ static bool gameCameraInitialized = false;
     while(!window->ShouldClose())
     {
     std::cout << "[frame] begin" << std::endl;
+        glfwPollEvents();
+        struct SwapGuard { GLFWwindow* w; ~SwapGuard() { glfwSwapBuffers(w); } } swapGuard{native};
+        glfwPollEvents();
+        // Force swap to keep window responsive in player mode
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
         // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
         for(auto& obj:objects){
@@ -1952,13 +1956,9 @@ if (isPlaying && !gameCameraInitialized && !sceneCameras.empty()) {
                 fpExcludeIdx=sc.followTargetIndex; break;
             }
         }
-        bool gameSafe = gameMSFBO != 0 && gameHDRFBO != 0 && gameHDRTex != 0 && g_VpSize.x > 0 && g_VpSize.y > 0;
-        if (gameSafe) {
-            glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y);
-            renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,vpAspect,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExcludeIdx);
-            glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO);
-            glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST);
-            ApplyBloomAndTonemap(gameHDRTex, gameFBO, (int)g_VpSize.x, (int)g_VpSize.y);
+        if (g_PlayerMode) { g_VpSize = io.DisplaySize; } bool gameSafe = gameMSFBO != 0 && gameHDRFBO != 0 && gameHDRTex != 0 && g_VpSize.x > 0 && g_VpSize.y > 0;
+        if (gameSafe) { if (g_PlayerMode) { glBindFramebuffer(GL_FRAMEBUFFER,0);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y); glClearColor(0.0f,0.0f,0.0f,1.0f);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+            renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,vpAspect,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExcludeIdx); } else { glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO);glViewport(0,0,(int)g_VpSize.x,(int)g_VpSize.y); renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,vpAspect,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExcludeIdx); glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO);glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO); glBlitFramebuffer(0,0,(int)g_VpSize.x,(int)g_VpSize.y,0,0,(int)g_VpSize.x,(int)g_VpSize.y,GL_COLOR_BUFFER_BIT,GL_NEAREST); ApplyBloomAndTonemap(gameHDRTex, gameFBO, (int)g_VpSize.x, (int)g_VpSize.y); }
         } else {
             glBindFramebuffer(GL_FRAMEBUFFER,0);
             glViewport(0,0,(int)io.DisplaySize.x,(int)io.DisplaySize.y);
@@ -4084,46 +4084,35 @@ ImGui::PopStyleColor();
 
 } // end if (!g_PlayerMode)
 else {
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    //   PLAYER MODE вЂ” РїРѕР»РЅРѕСЌРєСЂР°РЅРЅС‹Р№ РІРёРґ РёРіСЂС‹, Р±РµР· СЂРµРґР°РєС‚РѕСЂР°
-    // ---------------------------------------------------------в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-    g_VpSize = io.DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(0,0), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
-    ImGui::Begin("##GameFullscreen", nullptr,
-        ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|
-        ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|
-        ImGuiWindowFlags_NoBringToFrontOnFocus|ImGuiWindowFlags_NoNavFocus|
-        ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoDocking);
-    float u2g=g_VpSize.x>0.f?g_VpSize.x/3840.f:1.f;
-    float v1g=g_VpSize.y>0.f?g_VpSize.y/2160.f:1.f;
-    ImGui::Image((ImTextureID)(intptr_t)gameTex, g_VpSize, ImVec2(0,1), ImVec2(1,0));
-    // в”Ђв”Ђ Player mode: РєСѓСЂСЃРѕСЂ Р·Р°С…РІР°С‚С‹РІР°РµС‚СЃСЏ СЃСЂР°Р·Сѓ (РЅРµС‚ UI, РЅРµРєСѓРґР° РєР»РёРєР°С‚СЊ) в”Ђв”Ђ
-    if (!g_MouseCaptured) {
-        g_MouseCaptured = true;
-        glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        g_RawMouseFirst = true;
+    // PLAYER MODE: direct backbuffer render (standalone-game style, no editor UI)
+    ImGui::EndFrame();
+    int fwP=0, fhP=0; glfwGetFramebufferSize(native, &fwP, &fhP);
+    if (fwP>0 && fhP>0) {
+        g_VpSize = ImVec2((float)fwP,(float)fhP);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0,0,fwP,fhP);
+        glClearColor(0.05f,0.07f,0.12f,1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        int fpExP=-1;
+        for (auto& scP:sceneCameras) { if(scP.isPrimary && scP.followTargetIndex>=0 && scP.followTargetIndex<(int)objects.size()){ fpExP=scP.followTargetIndex; break; } }
+        float aspectP = (float)fwP/(float)fhP;
+        renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspectP,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExP);
     }
-    if (g_MouseCaptured && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        g_MouseCaptured = false;
-        glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    }
-    if (!g_MouseCaptured && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        g_MouseCaptured = true;
-        glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        g_RawMouseFirst = true;
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
+    static bool capOnceP=false;
+    if(!capOnceP){capOnceP=true; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED); g_RawMouseFirst=true;}
+    if (glfwGetKey(native, GLFW_KEY_ESCAPE)==GLFW_PRESS) { glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL); }
+    g_RawMouseDX=0; g_RawMouseDY=0;
+    glfwSwapBuffers(native);
+    continue;
 }
     VE::Console::Get().Render();
 
 ImGui::Render();
 ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 g_RawMouseDX=0; g_RawMouseDY=0; // СЃР±СЂРѕСЃ РґРµР»СЊС‚С‹ РџР•Р Р•Р” poll вЂ” СЃРІРµР¶РёРµ РґР°РЅРЅС‹Рµ РїРµСЂРµР¶РёРІСѓС‚ РґРѕ СЃР»РµРґСѓСЋС‰РµРіРѕ РєР°РґСЂР°
-window->OnUpdate();
+    std::cout << "[frame] onupdate" << std::endl;
+    // window->OnUpdate(); // disabled — swap now via RAII SwapGuard
 }
 } // end while
 
@@ -4144,6 +4133,8 @@ glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO
 delete window;
 return 0;
 }
+
+
 
 
 
