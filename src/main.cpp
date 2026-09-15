@@ -2095,35 +2095,20 @@ auto ToggleBtn = [&](const char* lbl, bool active, ImVec2 sz) -> bool {
     return clicked;
 };
 
-    // PLAYER DIRECT RENDER (HDR pipeline + tonemap, single swap)
+    // PLAYER DIRECT RENDER (proven: direct to backbuffer, single swap)
     if (g_PlayerMode) {
         ImGui::EndFrame();
         int fwD=0, fhD=0; glfwGetFramebufferSize(native, &fwD, &fhD);
         if (fwD>0 && fhD>0) {
-            g_VpSize = ImVec2((float)fwD,(float)fhD);
-            if (fwD != g_VpLastWidth || fhD != g_VpLastHeight) {
-                ResizeViewportFBO(fwD, fhD, sceneMSFBO, sceneMSColorRBO, sceneMSDepthRBO, gameMSFBO, gameMSColorRBO, gameMSDepthRBO, sceneHDRFBO, sceneHDRTex, gameHDRFBO, gameHDRTex, sceneFBO, sceneTex, sceneRBO, gameFBO, gameTex, gameRBO);
-                g_VpLastWidth = fwD; g_VpLastHeight = fhD;
-            }
-            bool safeD = gameMSFBO!=0 && gameHDRFBO!=0 && gameHDRTex!=0;
-            if (safeD) {
-                glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO); glViewport(0,0,fwD,fhD);
-                glClearColor(0.35f,0.55f,0.85f,1.0f); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-                float aspD = (float)fwD/(float)fhD;
-                int fpExD=-1;
-                for (auto& scD:sceneCameras) { if(scD.isPrimary && scD.followTargetIndex>=0 && scD.followTargetIndex<(int)objects.size()){ fpExD=scD.followTargetIndex; break; } }
-                renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspD,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExD);
-                glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO); glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO);
-                glBlitFramebuffer(0,0,fwD,fhD,0,0,fwD,fhD,GL_COLOR_BUFFER_BIT,GL_NEAREST);
-                ApplyBloomAndTonemap(gameHDRTex, gameFBO, fwD, fhD);
-                glBindFramebuffer(GL_READ_FRAMEBUFFER,gameFBO); glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
-                glBlitFramebuffer(0,0,fwD,fhD,0,0,fwD,fhD,GL_COLOR_BUFFER_BIT,GL_LINEAR);
-            } else {
-                glDisable(GL_SCISSOR_TEST); glBindFramebuffer(GL_FRAMEBUFFER,0); glViewport(0,0,fwD,fhD);
-                glClearColor(0.35f,0.55f,0.85f,1.0f); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-                float aspD2 = (float)fwD/(float)fhD;
-                renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspD2,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,-1);
-            }
+            glDisable(GL_SCISSOR_TEST);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0,0,fwD,fhD);
+            glClearColor(0.35f,0.55f,0.85f,1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            float aspD = (float)fwD/(float)fhD;
+            int fpExD=-1;
+            for (auto& scD:sceneCameras) { if(scD.isPrimary && scD.followTargetIndex>=0 && scD.followTargetIndex<(int)objects.size()){ fpExD=scD.followTargetIndex; break; } }
+            renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspD,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExD);
         }
         static bool capD=false;
         if(!capD){capD=true; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED); g_RawMouseFirst=true;}
