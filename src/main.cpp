@@ -1541,11 +1541,8 @@ static bool gameCameraInitialized = false;
     });
     while(!window->ShouldClose())
     {
-    std::cout << "[frame] begin" << std::endl;
         glfwPollEvents();
         struct SwapGuard { GLFWwindow* w; ~SwapGuard() { glfwSwapBuffers(w); } } swapGuard{native};
-        glfwPollEvents();
-        // Force swap to keep window responsive in player mode
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
         // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
         for(auto& obj:objects){
