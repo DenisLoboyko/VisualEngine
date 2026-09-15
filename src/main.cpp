@@ -1356,10 +1356,10 @@ static bool gameCameraInitialized = false;
         VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
         VE::Console::Get().AddBool("r_dof", false, "depth of field");
         VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
-        VE::Console::Get().AddBool("r_antialias", true, "post AA");
+        VE::Console::Get().AddBool("r_antialias", !g_PlayerMode, "post AA");
         VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
-        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
-        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
+        VE::Console::Get().AddInt("r_shadow_quality", g_PlayerMode ? 1 : 2, "shadow quality 0-3");
+        VE::Console::Get().AddInt("r_effects_quality", g_PlayerMode ? 1 : 2, "effects quality 0-3");
         VE::Console::Get().AddBool("hud_show", true, "show HUD");
         VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
         VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
@@ -1392,10 +1392,10 @@ static bool gameCameraInitialized = false;
         VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
         VE::Console::Get().AddBool("r_dof", false, "depth of field");
         VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
-        VE::Console::Get().AddBool("r_antialias", true, "post AA");
+        VE::Console::Get().AddBool("r_antialias", !g_PlayerMode, "post AA");
         VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
-        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
-        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
+        VE::Console::Get().AddInt("r_shadow_quality", g_PlayerMode ? 1 : 2, "shadow quality 0-3");
+        VE::Console::Get().AddInt("r_effects_quality", g_PlayerMode ? 1 : 2, "effects quality 0-3");
         VE::Console::Get().AddBool("hud_show", true, "show HUD");
         VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
         VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
@@ -1510,10 +1510,10 @@ static bool gameCameraInitialized = false;
         VE::Console::Get().AddBool("r_ssr", false, "screen-space reflections");
         VE::Console::Get().AddBool("r_dof", false, "depth of field");
         VE::Console::Get().AddBool("r_motionblur", false, "motion blur");
-        VE::Console::Get().AddBool("r_antialias", true, "post AA");
+        VE::Console::Get().AddBool("r_antialias", !g_PlayerMode, "post AA");
         VE::Console::Get().AddInt("r_tex_quality", 2, "texture quality 0-3");
-        VE::Console::Get().AddInt("r_shadow_quality", 2, "shadow quality 0-3");
-        VE::Console::Get().AddInt("r_effects_quality", 2, "effects quality 0-3");
+        VE::Console::Get().AddInt("r_shadow_quality", g_PlayerMode ? 1 : 2, "shadow quality 0-3");
+        VE::Console::Get().AddInt("r_effects_quality", g_PlayerMode ? 1 : 2, "effects quality 0-3");
         VE::Console::Get().AddBool("hud_show", true, "show HUD");
         VE::Console::Get().AddBool("ed_dark_theme", true, "dark theme");
         VE::Console::Get().AddFloat("ed_ui_scale", 1.f, "UI scale");
@@ -4152,6 +4152,7 @@ glDeleteRenderbuffers(1,&gameMSColorRBO);glDeleteRenderbuffers(1,&gameMSDepthRBO
 delete window;
 return 0;
 }
+
 
 
 
