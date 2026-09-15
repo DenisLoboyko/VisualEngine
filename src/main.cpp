@@ -1542,7 +1542,6 @@ static bool gameCameraInitialized = false;
     while(!window->ShouldClose())
     {
         glfwPollEvents();
-        struct SwapGuard { GLFWwindow* w; ~SwapGuard() { glfwSwapBuffers(w); } } swapGuard{native};
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
         // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
         for(auto& obj:objects){
@@ -2095,18 +2094,37 @@ auto ToggleBtn = [&](const char* lbl, bool active, ImVec2 sz) -> bool {
     return clicked;
 };
 
-    // PLAYER DIRECT RENDER (bypass editor UI entirely)
+    // PLAYER DIRECT RENDER (HDR pipeline + tonemap, single swap)
     if (g_PlayerMode) {
         ImGui::EndFrame();
         int fwD=0, fhD=0; glfwGetFramebufferSize(native, &fwD, &fhD);
-        glDisable(GL_SCISSOR_TEST);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0,0,fwD,fhD);
-        glClearColor(0.35f,0.55f,0.85f,1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        float aspD = fhD>0 ? (float)fwD/(float)fhD : 1.777f;
-        int fpExD=-1; for (auto& scD:sceneCameras) { if(scD.isPrimary && scD.followTargetIndex>=0 && scD.followTargetIndex<(int)objects.size()){ fpExD=scD.followTargetIndex; break; } }
-        renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspD,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExD);
+        if (fwD>0 && fhD>0) {
+            g_VpSize = ImVec2((float)fwD,(float)fhD);
+            if (fwD != g_VpLastWidth || fhD != g_VpLastHeight) {
+                ResizeViewportFBO(fwD, fhD, sceneMSFBO, sceneMSColorRBO, sceneMSDepthRBO, gameMSFBO, gameMSColorRBO, gameMSDepthRBO, sceneHDRFBO, sceneHDRTex, gameHDRFBO, gameHDRTex, sceneFBO, sceneTex, sceneRBO, gameFBO, gameTex, gameRBO);
+                g_VpLastWidth = fwD; g_VpLastHeight = fhD;
+            }
+            bool safeD = gameMSFBO!=0 && gameHDRFBO!=0 && gameHDRTex!=0;
+            if (safeD) {
+                glBindFramebuffer(GL_FRAMEBUFFER,gameMSFBO); glViewport(0,0,fwD,fhD);
+                glClearColor(0.35f,0.55f,0.85f,1.0f); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+                float aspD = (float)fwD/(float)fhD;
+                int fpExD=-1; for (auto& scD:sceneCameras) { if(scD.isPrimary && scD.followTargetIndex>=0 && scD.followTargetIndex<(int)objects.size()){ fpExD=scD.followTargetIndex; break; } }
+                renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspD,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionType::None,fpExD);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER,gameMSFBO); glBindFramebuffer(GL_DRAW_FRAMEBUFFER,gameHDRFBO);
+                glBlitFramebuffer(0,0,fwD,fhD,0,0,fwD,fhD,GL_COLOR_BUFFER_BIT,GL_NEAREST);
+                ApplyBloomAndTonemap(gameHDRTex, gameFBO, fwD, fhD);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER,gameFBO); glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0);
+                glBlitFramebuffer(0,0,fwD,fhD,0,0,fwD,fhD,GL_COLOR_BUFFER_BIT,GL_LINEAR);
+            } else {
+                glDisable(GL_SCISSOR_TEST); glBindFramebuffer(GL_FRAMEBUFFER,0); glViewport(0,0,fwD,fhD);
+                glClearColor(0.35f,0.55f,0.85f,1.0f); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+                float aspD = (float)fwD/(float)fhD;
+                renderScene(objects,-1,true,shader,skinnedShader,outlineShader,gridShader,gizmoShader,skyboxShader,skybox,grid,cubeVAO,sphere,cylinder,pyramid,capsule,plane,arrowVAO,arrowCnt,gameCamera,aspD,gizmoMode,dragAxis,showSkybox,false,false,gs,lights,sceneCameras,-1,-1,SelectionTyp
+
+e::None,-1);
+            }
+        }
         static bool capD=false; if(!capD){capD=true; glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_DISABLED); g_RawMouseFirst=true;}
         if (glfwGetKey(native, GLFW_KEY_ESCAPE)==GLFW_PRESS) glfwSetInputMode(native, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         g_RawMouseDX=0; g_RawMouseDY=0;
@@ -4127,7 +4145,7 @@ ImGui::Render();
 ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 g_RawMouseDX=0; g_RawMouseDY=0; // СЃР±СЂРѕСЃ РґРµР»СЊС‚С‹ РџР•Р Р•Р” poll вЂ” СЃРІРµР¶РёРµ РґР°РЅРЅС‹Рµ РїРµСЂРµР¶РёРІСѓС‚ РґРѕ СЃР»РµРґСѓСЋС‰РµРіРѕ РєР°РґСЂР°
     std::cout << "[frame] onupdate" << std::endl;
-    // window->OnUpdate(); // disabled — swap now via RAII SwapGuard
+    glfwSwapBuffers(native);
 }
 } // end while
 
