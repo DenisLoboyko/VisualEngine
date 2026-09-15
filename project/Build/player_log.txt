@@ -1,4 +1,4 @@
-[Player] start, scene=Assets\Scenes\AutoSave_5.scene
+[Player] start, scene=Assets\Scenes\AutoSave_6.scene
 Window created: Game (1920x1080)
 GLAD loaded successfully
 GLAD loaded successfully
@@ -10,5 +10,5 @@ GLAD loaded: GL 3.3
 [log] Engine initialized — VisualEngine v0.1
 [log] Scene loaded: Untitled
 [Audio] Initialized
-[log] Player mode: launching C:\Users\loboy\Downloads\VisualEngine\project\Build\Assets\Scenes\AutoSave_5.scene
+[log] Player mode: launching C:\Users\loboy\Downloads\VisualEngine\project\Build\Assets\Scenes\AutoSave_6.scene
 [log] Play
