@@ -58,3 +58,7 @@ args --player/--scene -> g_PlayerMode=true -> freopen log hooks -> init -> load 
 -
 
  Build & Export: build_game command works from console; editor menu integration planned.
+
+## KNOWN ISSUE (v0.0.2.Beta, TODO v0.0.3)
+- Player build renders WITHOUT post-processing (no bloom/ACES tonemap) - colors more saturated than editor Game view.
+- Attempts to present post-processed frame in player mode (blit gameFBO->0 or re-run ApplyBloomAndTonemap chain) produce BLACK screen. Direct renderScene to backbuffer works. Investigate with glGetError after each chain step; suspect ApplyBloomAndTonemap state dependence in player mode.
