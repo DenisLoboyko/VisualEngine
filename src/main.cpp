@@ -1542,6 +1542,7 @@ static bool gameCameraInitialized = false;
     while(!window->ShouldClose())
     {
         glfwPollEvents();
+        glfwSwapInterval(1); // force vsync: cap FPS to monitor refresh, stop display flicker
         float now=glfwGetTime();deltaTime=now-lastFrame;lastFrame=now;
         // в”Ђв”Ђ РџСЂРѕРґРІРёРіР°РµРј РІСЂРµРјСЏ СЃРєРµР»РµС‚РЅРѕР№ Р°РЅРёРјР°С†РёРё (РёРіСЂР°РµС‚ Рё РІ СЂРµРґР°РєС‚РѕСЂРµ, РґР»СЏ РїСЂРµРІСЊСЋ) в”Ђв”Ђ
         for(auto& obj:objects){
